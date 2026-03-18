@@ -102,13 +102,20 @@ function Main {
         Write-Color "No changes to backup." -Color Gray
     }
 
-    # 5. Push
+    # 5. Push & Publish Logic
     if (-not [string]::IsNullOrEmpty($GLOBAL_GITHUB_REPO)) {
         Write-Color "Pushing to GitHub..." -Color Magenta
+        
+        # Reset remote to ensure it always matches current UI config
         git remote remove origin 2>&1 | Out-Null
         Execute-Git "remote add origin $GLOBAL_GITHUB_REPO" | Out-Null
         
-        $pushResult = Execute-Git "push origin $GLOBAL_CURRENT_BRANCH"
+        # FEATURE ADDITION: 
+        # Using -u (upstream) ensures that even new branches are 'published' 
+        # to the remote. --force ensures the backup always overwrites the remote.
+        Write-Color "Publishing/Updating branch: $GLOBAL_CURRENT_BRANCH" -Color Yellow
+        $pushResult = Execute-Git "push -u origin $GLOBAL_CURRENT_BRANCH --force"
+        
         if ($null -ne $pushResult) {
             Write-Color "PUSH SUCCESSFUL" -Color Green
         }

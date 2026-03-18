@@ -1,3 +1,5 @@
+#manage_branch.ps1
+
 param(
     [Parameter(Mandatory=$true)] [string]$TargetBranch,
     [Parameter(Mandatory=$false)] [switch]$CreateNew,
