@@ -9,7 +9,7 @@ $WORKSPACE_PATH = Get-Location
 
 function Write-Color {
     param([string]$Message, [ConsoleColor]$Color)
-    Write-Host $Message -ForegroundColor $Color
+    Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] $Message" -ForegroundColor $Color
 }
 
 function Report-GitError {
@@ -25,24 +25,8 @@ function Report-GitError {
     Write-Color "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`n" -Color Red
 }
 
-function Load-Config {
-    if (Test-Path $CONFIG_FILE) {
-        try {
-            . $CONFIG_FILE
-            # Map Python UI variables to global script variables
-            $global:GLOBAL_GITHUB_REPO = $GITHUB_REPO
-            $global:GLOBAL_CURRENT_BRANCH = if ([string]::IsNullOrWhiteSpace($CURRENT_BRANCH)) { $DEFAULT_BRANCH } else { $CURRENT_BRANCH }
-            Write-Color "Config loaded: $global:GLOBAL_GITHUB_REPO" -Color Green
-        } catch {
-            Write-Color "Config corrupted. Please check your UI settings." -Color Yellow
-            New-Config
-        }
-    } else {
-        New-Config
-    }
-}
-
 function New-Config {
+    Write-Color "No configuration found. Starting interactive setup..." -Color Yellow
     $repo = Read-Host "Enter GitHub repository URL"
     $branch = Read-Host "Enter branch name (default: main)"
     $global:GLOBAL_GITHUB_REPO = $repo
@@ -53,11 +37,29 @@ function New-Config {
         "`$CURRENT_BRANCH = '$GLOBAL_CURRENT_BRANCH'"
     )
     $configLines | Out-File -FilePath $CONFIG_FILE -Encoding utf8 -Force
+    Write-Color "Config saved to $CONFIG_FILE" -Color Green
+}
+
+function Load-Config {
+    if (Test-Path $CONFIG_FILE) {
+        try {
+            # Dot-source to pull variables from the config file
+            . $CONFIG_FILE
+            $global:GLOBAL_GITHUB_REPO = $GITHUB_REPO
+            $global:GLOBAL_CURRENT_BRANCH = if ([string]::IsNullOrWhiteSpace($CURRENT_BRANCH)) { $DEFAULT_BRANCH } else { $CURRENT_BRANCH }
+            Write-Color "Config loaded: $global:GLOBAL_GITHUB_REPO" -Color Green
+        } catch {
+            Write-Color "Config corrupted. Re-running setup..." -Color Yellow
+            New-Config
+        }
+    } else {
+        New-Config
+    }
 }
 
 function Execute-Git {
     param([string]$GitParams)
-    # Capture Success (1) and Error (2) streams together
+    # Redirect stderr to stdout so we can capture everything in $result
     $fullCommand = "git $GitParams 2>&1"
     $result = Invoke-Expression $fullCommand
     
@@ -69,60 +71,57 @@ function Execute-Git {
 }
 
 function Main {
-    # 0. Set Context
+    # 0. Context & Docker Prep
     Set-Location $WORKSPACE_PATH
     Write-Color "Starting Git Process in: $($WORKSPACE_PATH.Path)" -Color Cyan
     
-    # 1. Fix Docker Ownership Issue (Safe Directory)
-    # This prevents the script from crashing when Docker creates files as 'root'
+    # Fix Docker 'Ownership' issues (Safe Directory)
     $safeDir = $WORKSPACE_PATH.Path.Replace('\', '/')
     git config --global --add safe.directory $safeDir 2>&1 | Out-Null
 
-    # 2. Load Configuration (linked to your Python UI)
+    # 1. Configuration
     Load-Config
 
-    # 3. Handle Brand New Projects (Init)
+    # 2. Repo Initialization
     if (-not (Test-Path ".git")) {
         Write-Color "No .git found. Initializing new repository..." -Color Yellow
         $null = Execute-Git "init"
     }
 
-    # 4. Handle Changes & Identity
+    # 3. Identity Check
+    if ([string]::IsNullOrEmpty((git config user.name))) {
+        git config user.email "jupyter@auto.push"
+        git config user.name "Jupyter User"
+    }
+
+    # 4. Handle Local Changes
     Write-Color "Checking for changes..." -Color Yellow
     $status = git status --porcelain 2>&1
     
     if (-not [string]::IsNullOrWhiteSpace($status)) {
-        Write-Color "Changes found. Staging files..." -Color Green
+        Write-Color "Changes found. Staging and committing..." -Color Green
         $null = Execute-Git "add ."
-        
-        # Identity check (prevent 'identity unknown' error)
-        if ([string]::IsNullOrEmpty((git config user.name))) {
-            git config user.email "jupyter@auto.push"
-            git config user.name "Jupyter User"
-        }
-        
-        Write-Host "Creating commit..."
         $null = Execute-Git "commit -m 'Auto-backup-$(Get-Date -Format 'HH-mm-ss')'"
     } else {
         Write-Color "No new changes to commit." -Color Gray
     }
 
-    # 5. Remote Sync & Force Push
+    # 5. GitHub Synchronization
     if (-not [string]::IsNullOrEmpty($global:GLOBAL_GITHUB_REPO)) {
-        Write-Color "Syncing with GitHub: $global:GLOBAL_GITHUB_REPO" -Color Magenta
+        Write-Color "Syncing with GitHub..." -Color Magenta
         
-        # Reset remote to ensure it matches the current UI config
+        # Reset remote to match the current UI/Config
         git remote remove origin 2>&1 | Out-Null
         $null = Execute-Git "remote add origin $global:GLOBAL_GITHUB_REPO"
         
-        # The Force Push handles the 'rejected' error you saw earlier
-        $pushResult = Execute-Git "push origin $global:GLOBAL_CURRENT_BRANCH --force"
+        Write-Color "Pushing to $global:GLOBAL_CURRENT_BRANCH --force" -Color Yellow
+        # We push specifically using local:remote format to be explicit
+        $pushResult = Execute-Git "push origin $($global:GLOBAL_CURRENT_BRANCH):$($global:GLOBAL_CURRENT_BRANCH) --force"
         
         if ($null -ne $pushResult) {
-            Write-Color "SUCCESS: Project backed up to $global:GLOBAL_CURRENT_BRANCH" -Color Green
+            Write-Color "SUCCESS: Project backed up to GitHub" -Color Green
         }
     }
 }
 
-# Run the process
 Main
