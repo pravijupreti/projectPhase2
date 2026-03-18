@@ -1,32 +1,45 @@
-# git_auto_push.ps1 - Complete Feature Version
+# git_auto_push.ps1
 $ErrorActionPreference = "Continue"
 
-# ==================== CONFIGURATION ====================
+# --- CONFIGURATION ---
 $CONFIG_FILE = Join-Path $HOME ".jupyter_git_config.ps1"
 $DEFAULT_BRANCH = "main"
 $WORKSPACE_PATH = Get-Location
-# ========================================================
+# ---------------------
 
 function Write-Color {
     param([string]$Message, [ConsoleColor]$Color)
-    Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] $Message" -ForegroundColor $Color
+    Write-Host $Message -ForegroundColor $Color
 }
 
 function Report-GitError {
     param([string]$Command, [string]$RawOutput)
     Write-Host "`n"
-    Write-Color "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -Color Red
     Write-Color "GIT ERROR DETECTED" -Color Red
     Write-Color "Command: $Command" -Color Yellow
     Write-Color "Exit Code: $LASTEXITCODE" -Color White
-    Write-Color "----------------------------------------" -Color Gray
     Write-Color "RAW SYSTEM MESSAGE:" -Color Cyan
     Write-Host $RawOutput
-    Write-Color "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`n" -Color Red
+    Write-Host "`n"
+}
+
+function Load-Config {
+    if (Test-Path $CONFIG_FILE) {
+        try {
+            . $CONFIG_FILE
+            $global:GLOBAL_GITHUB_REPO = $GITHUB_REPO
+            $global:GLOBAL_CURRENT_BRANCH = $CURRENT_BRANCH
+            Write-Color "Config loaded: $GLOBAL_GITHUB_REPO" -Color Green
+        } catch {
+            Write-Color "Config corrupted. Re-entering details." -Color Yellow
+            New-Config
+        }
+    } else {
+        New-Config
+    }
 }
 
 function New-Config {
-    Write-Color "No configuration found. Starting interactive setup..." -Color Yellow
     $repo = Read-Host "Enter GitHub repository URL"
     $branch = Read-Host "Enter branch name (default: main)"
     $global:GLOBAL_GITHUB_REPO = $repo
@@ -37,29 +50,12 @@ function New-Config {
         "`$CURRENT_BRANCH = '$GLOBAL_CURRENT_BRANCH'"
     )
     $configLines | Out-File -FilePath $CONFIG_FILE -Encoding utf8 -Force
-    Write-Color "Config saved to $CONFIG_FILE" -Color Green
-}
-
-function Load-Config {
-    if (Test-Path $CONFIG_FILE) {
-        try {
-            # Dot-source to pull variables from the config file
-            . $CONFIG_FILE
-            $global:GLOBAL_GITHUB_REPO = $GITHUB_REPO
-            $global:GLOBAL_CURRENT_BRANCH = if ([string]::IsNullOrWhiteSpace($CURRENT_BRANCH)) { $DEFAULT_BRANCH } else { $CURRENT_BRANCH }
-            Write-Color "Config loaded: $global:GLOBAL_GITHUB_REPO" -Color Green
-        } catch {
-            Write-Color "Config corrupted. Re-running setup..." -Color Yellow
-            New-Config
-        }
-    } else {
-        New-Config
-    }
 }
 
 function Execute-Git {
     param([string]$GitParams)
-    # Redirect stderr to stdout so we can capture everything in $result
+    
+    # We use Invoke-Expression here for better handling of multi-part strings
     $fullCommand = "git $GitParams 2>&1"
     $result = Invoke-Expression $fullCommand
     
@@ -71,55 +67,50 @@ function Execute-Git {
 }
 
 function Main {
-    # 0. Context & Docker Prep
     Set-Location $WORKSPACE_PATH
     Write-Color "Starting Git Process in: $($WORKSPACE_PATH.Path)" -Color Cyan
     
-    # Fix Docker 'Ownership' issues (Safe Directory)
+    # 1. Trust directory
     $safeDir = $WORKSPACE_PATH.Path.Replace('\', '/')
     git config --global --add safe.directory $safeDir 2>&1 | Out-Null
 
-    # 1. Configuration
+    # 2. Load settings
     Load-Config
 
-    # 2. Repo Initialization
+    # 3. Initialize
     if (-not (Test-Path ".git")) {
-        Write-Color "No .git found. Initializing new repository..." -Color Yellow
-        $null = Execute-Git "init"
+        Write-Host "No .git found. Initializing..."
+        Execute-Git "init" | Out-Null
     }
 
-    # 3. Identity Check
-    if ([string]::IsNullOrEmpty((git config user.name))) {
-        git config user.email "jupyter@auto.push"
-        git config user.name "Jupyter User"
-    }
-
-    # 4. Handle Local Changes
+    # 4. Changes
     Write-Color "Checking for changes..." -Color Yellow
     $status = git status --porcelain 2>&1
     
     if (-not [string]::IsNullOrWhiteSpace($status)) {
-        Write-Color "Changes found. Staging and committing..." -Color Green
-        $null = Execute-Git "add ."
-        $null = Execute-Git "commit -m 'Auto-backup-$(Get-Date -Format 'HH-mm-ss')'"
+        Write-Color "Changes found. Staging files..." -Color Green
+        Execute-Git "add ." | Out-Null
+        
+        if ([string]::IsNullOrEmpty((git config user.name))) {
+            git config user.email "jupyter@auto.push"
+            git config user.name "Jupyter User"
+        }
+        
+        Write-Host "Creating commit..."
+        Execute-Git "commit -m 'Auto-backup-$(Get-Date -Format 'HH-mm-ss')'" | Out-Null
     } else {
-        Write-Color "No new changes to commit." -Color Gray
+        Write-Color "No changes to backup." -Color Gray
     }
 
-    # 5. GitHub Synchronization
-    if (-not [string]::IsNullOrEmpty($global:GLOBAL_GITHUB_REPO)) {
-        Write-Color "Syncing with GitHub..." -Color Magenta
-        
-        # Reset remote to match the current UI/Config
+    # 5. Push
+    if (-not [string]::IsNullOrEmpty($GLOBAL_GITHUB_REPO)) {
+        Write-Color "Pushing to GitHub..." -Color Magenta
         git remote remove origin 2>&1 | Out-Null
-        $null = Execute-Git "remote add origin $global:GLOBAL_GITHUB_REPO"
+        Execute-Git "remote add origin $GLOBAL_GITHUB_REPO" | Out-Null
         
-        Write-Color "Pushing to $global:GLOBAL_CURRENT_BRANCH --force" -Color Yellow
-        # We push specifically using local:remote format to be explicit
-        $pushResult = Execute-Git "push origin $($global:GLOBAL_CURRENT_BRANCH):$($global:GLOBAL_CURRENT_BRANCH) --force"
-        
+        $pushResult = Execute-Git "push origin $GLOBAL_CURRENT_BRANCH"
         if ($null -ne $pushResult) {
-            Write-Color "SUCCESS: Project backed up to GitHub" -Color Green
+            Write-Color "PUSH SUCCESSFUL" -Color Green
         }
     }
 }
