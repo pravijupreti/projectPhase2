@@ -1,397 +1,202 @@
 #!/usr/bin/env python3
 import os
-import platform
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import subprocess
-import sys
 import threading
-import time
-import tempfile
-
+import uuid 
 
 class SafeJupyterLauncher:
-
     def __init__(self, root):
         self.root = root
-        self.root.title("Safe Jupyter Notebook Launcher")
-        self.root.geometry("750x550")
-
+        self.root.title("Project Control Center")
+        self.root.geometry("1100x850")
+        self.project_root = os.path.dirname(os.path.abspath(__file__))
         self.process = None
         self.running = False
-        self.fix_script_path = None
-
-        # Project root = folder where app.py lives
-        self.project_root = os.path.dirname(os.path.abspath(__file__))
+        self.found_branches = []
 
         self.root.protocol("WM_DELETE_WINDOW", self.safe_exit)
+        
+        # --- TAB UI ---
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.create_widgets()
-        self.show_warning()
+        self.tab_jupyter = ttk.Frame(self.notebook)
+        self.tab_git = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_jupyter, text=" 🚀 Jupyter Dashboard ")
+        self.notebook.add(self.tab_git, text=" 🌿 Git & Branch Manager ")
 
-    def show_warning(self):
-        warning = (
-            "⚠️ SAFETY NOTICE ⚠️\n"
-            "Use STOP button to terminate scripts safely.\n"
-            + "=" * 50 + "\n"
-        )
-        self.update_output(warning)
+        self.setup_jupyter_tab()
+        self.setup_git_tab()
 
-    def create_widgets(self):
-        control_frame = tk.Frame(self.root)
-        control_frame.pack(pady=10)
-
-        self.launch_btn = tk.Button(
-            control_frame,
-            text="▶ Launch Jupyter Notebook",
-            command=self.launch_safe,
-            padx=15,
-            pady=8,
-            bg="#4CAF50",
-            fg="white"
-        )
-        self.launch_btn.pack(side=tk.LEFT, padx=5)
-
-        self.fix_btn = tk.Button(
-            control_frame,
-            text="🔧 Fix Docker Daemon",
-            command=self.fix_docker_daemon,
-            padx=15,
-            pady=8,
-            bg="#FF9800",
-            fg="white"
-        )
-        self.fix_btn.pack(side=tk.LEFT, padx=5)
-
-        self.gpu_btn = tk.Button(
-            control_frame,
-            text="🖥 Check GPU",
-            command=self.check_gpu_thread,
-            padx=15,
-            pady=8,
-            bg="#2196F3",
-            fg="white"
-        )
-        self.gpu_btn.pack(side=tk.LEFT, padx=5)
-
-        # Configure Git button (UI for git config)
-        self.git_config_btn = tk.Button(
-            control_frame,
-            text="Configure Git",
-            command=self.configure_git,
-            padx=15,
-            pady=8,
-            bg="#9C27B0",
-            fg="white"
-        )
-        self.git_config_btn.pack(side=tk.LEFT, padx=5)
-
-        self.stop_btn = tk.Button(
-            control_frame,
-            text="⏹ Stop Script",
-            command=self.stop_safe,
-            padx=15,
-            pady=8,
-            bg="#f44336",
-            fg="white",
-            state=tk.DISABLED
-        )
+    def setup_jupyter_tab(self):
+        ctrl_frame = tk.Frame(self.tab_jupyter); ctrl_frame.pack(pady=15, fill=tk.X)
+        self.launch_btn = tk.Button(ctrl_frame, text="▶ Launch Jupyter", command=self.launch_safe, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), padx=20, pady=10)
+        self.launch_btn.pack(side=tk.LEFT, padx=20)
+        self.stop_btn = tk.Button(ctrl_frame, text="⏹ Stop Server", command=self.stop_safe, bg="#f44336", fg="white", state=tk.DISABLED, font=("Arial", 10, "bold"), padx=20, pady=10)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
+        self.jupyter_log = scrolledtext.ScrolledText(self.tab_jupyter, bg="#1e1e1e", fg="#d4d4d4", font=("Consolas", 10))
+        self.jupyter_log.pack(fill=tk.BOTH, expand=True, padx=20, pady=(5, 20))
 
-        self.status_label = tk.Label(
-            self.root,
-            text="Status: Ready",
-            fg="blue"
-        )
-        self.status_label.pack(pady=5)
+    def setup_git_tab(self):
+        # Configuration Panel (URL Saving)
+        config_panel = tk.LabelFrame(self.tab_git, text=" Configuration ", padx=10, pady=10)
+        config_panel.pack(fill=tk.X, padx=15, pady=10)
 
-        self.output_text = scrolledtext.ScrolledText(
-            self.root,
-            width=85,
-            height=25,
-            font=("Consolas", 10)
-        )
-        self.output_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        url_row = tk.Frame(config_panel); url_row.pack(fill=tk.X, pady=2)
+        tk.Label(url_row, text="Repo URL:", width=10, anchor="w").pack(side=tk.LEFT)
+        self.repo_entry = tk.Entry(url_row); self.repo_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        tk.Button(url_row, text="Save", command=self.save_repo_url).pack(side=tk.LEFT)
 
-    def update_output(self, text):
-        def update():
-            self.output_text.insert(tk.END, text)
-            self.output_text.see(tk.END)
+        # Branch Operations Row
+        branch_row = tk.Frame(config_panel); branch_row.pack(fill=tk.X, pady=10)
+        self.branch_combo = ttk.Combobox(branch_row, width=25, state="readonly"); self.branch_combo.pack(side=tk.LEFT, padx=5)
+        tk.Button(branch_row, text="🔄 Sync Tree", command=self.sync_git_data, bg="#9C27B0", fg="white").pack(side=tk.LEFT, padx=5)
+        self.new_branch_entry = tk.Entry(branch_row, width=15); self.new_branch_entry.pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(branch_row, text="Switch", bg="#2196F3", fg="white", command=lambda: self.start_git_op(False)).pack(side=tk.LEFT, padx=2)
+        tk.Button(branch_row, text="Create", bg="#388E3C", fg="white", command=lambda: self.start_git_op(True)).pack(side=tk.LEFT, padx=2)
 
-        if threading.current_thread() is threading.main_thread():
-            update()
-        else:
-            self.root.after(0, update)
+        # Main Git Display Area
+        self.git_paned = ttk.Panedwindow(self.tab_git, orient=tk.VERTICAL)
+        self.git_paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
 
-    def update_status(self, status, color="blue"):
-        def update():
-            self.status_label.config(text=f"Status: {status}", fg=color)
+        self.tree_frame = tk.Frame(self.git_paned)
+        self.tree = ttk.Treeview(self.tree_frame, columns=("SHA", "REFS", "AUTHOR", "DATE", "MESSAGE"), selectmode="browse")
+        self.tree.heading("#0", text="Graph"); self.tree.heading("SHA", text="SHA"); self.tree.heading("REFS", text="Refs")
+        self.tree.heading("AUTHOR", text="Author"); self.tree.heading("DATE", text="Date"); self.tree.heading("MESSAGE", text="Message")
+        self.tree.column("#0", width=150); self.tree.column("SHA", width=90); self.tree.column("REFS", width=150)
+        
+        self.tree.tag_configure("graph_style", font=("Consolas", 10))
+        self.tree.tag_configure("head_row", background="#e3f2fd")
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        if threading.current_thread() is threading.main_thread():
-            update()
-        else:
-            self.root.after(0, update)
+        self.git_log = scrolledtext.ScrolledText(self.git_paned, height=8, font=("Consolas", 10), bg="#f8f9fa")
+        self.git_paned.add(self.tree_frame, weight=3)
+        self.git_paned.add(self.git_log, weight=1)
 
-    # ---------- Git config UI ----------
+        self.tree.bind("<Button-3>", self.show_tree_context_menu)
+        self.load_repo_url()
 
-    def configure_git(self):
-        """Small dialog to store GitHub repo + branch into ~/.jupyter_git_config.ps1."""
-        cfg_win = tk.Toplevel(self.root)
-        cfg_win.title("Git Auto-Push Configuration")
-
-        tk.Label(cfg_win, text="GitHub repository URL:").grid(
-            row=0, column=0, sticky="w", padx=5, pady=5
-        )
-        repo_entry = tk.Entry(cfg_win, width=60)
-        repo_entry.grid(row=0, column=1, padx=5, pady=5)
-
-        tk.Label(cfg_win, text="Branch name:").grid(
-            row=1, column=0, sticky="w", padx=5, pady=5
-        )
-        branch_entry = tk.Entry(cfg_win, width=20)
-        branch_entry.insert(0, "main")
-        branch_entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
-
-        def save_cfg():
-            repo = repo_entry.get().strip()
-            branch = branch_entry.get().strip() or "main"
-            if not repo:
-                messagebox.showerror("Error", "Repository URL is required.")
-                return
-
-            cfg_path = os.path.join(os.path.expanduser("~"), ".jupyter_git_config.ps1")
-            content = (
-                "# Jupyter Git Auto-Push Configuration\n"
-                f"# Created: {time.ctime()}\n"
-                f'$GITHUB_REPO="{repo}"\n'
-                f'$CURRENT_BRANCH="{branch}"\n'
-            )
+    # --- REPO URL LOGIC ---
+    def load_repo_url(self):
+        path = os.path.join(os.path.expanduser("~"), ".jupyter_git_config.ps1")
+        if os.path.exists(path):
             try:
-                with open(cfg_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                self.update_output(f"\nSaved Git config to: {cfg_path}\n")
-                messagebox.showinfo("Saved", "Git auto-push configuration saved.")
-                cfg_win.destroy()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save config:\n{e}")
+                with open(path, "r") as f:
+                    c = f.read()
+                    if '"' in c: 
+                        url = c.split('"')[1]
+                        self.repo_entry.delete(0, tk.END)
+                        self.repo_entry.insert(0, url)
+            except: pass
 
-        tk.Button(cfg_win, text="Save", command=save_cfg).grid(
-            row=2, column=0, columnspan=2, pady=10
-        )
+    def save_repo_url(self):
+        path = os.path.join(os.path.expanduser("~"), ".jupyter_git_config.ps1")
+        with open(path, "w") as f: f.write(f'$GITHUB_REPO="{self.repo_entry.get().strip()}"')
+        messagebox.showinfo("Success", "Repository URL saved.")
 
-    # ---------- existing logic ----------
+    # --- GIT STREAM LOGIC ---
+    def parse_git_stream(self, line):
+        line = line.strip()
+        if not line: return
+        print(f"[DEBUG RAW]: {line}") # Debugging in Terminal
 
-    def check_gpu_thread(self):
-        thread = threading.Thread(target=self.check_gpu)
-        thread.daemon = True
-        thread.start()
+        if line.startswith("[BRANCH]"):
+            b = line.replace("[BRANCH]", "").strip()
+            if b not in self.found_branches: self.found_branches.append(b)
+        elif line.startswith("[TREE]"):
+            self.root.after(0, lambda: self.handle_tree_data(line[6:]))
+        elif line.startswith("[ERROR]"):
+            self.update_git_log(f"❌ {line[7:]}\n")
+        else:
+            self.update_git_log(line + "\n")
 
-    def check_gpu(self):
-        self.update_output("\n🔍 Checking GPU...\n")
-        self.update_output("=" * 40 + "\n")
-
-        system = platform.system()
-
-        try:
-            result = subprocess.run(
-                ["nvidia-smi"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
-                self.update_output("✅ NVIDIA GPU detected\n\n")
-                self.update_output(result.stdout + "\n")
-                return
-        except FileNotFoundError:
-            pass
-
-        try:
-            if system == "Windows":
-                result = subprocess.run(
-                    ["wmic", "path", "win32_VideoController", "get", "name"],
-                    capture_output=True,
-                    text=True
-                )
-                self.update_output("Detected GPUs:\n")
-                self.update_output(result.stdout + "\n")
-
-            elif system == "Linux":
-                result = subprocess.run(
-                    ["lspci"],
-                    capture_output=True,
-                    text=True
-                )
-                for line in result.stdout.splitlines():
-                    if "VGA" in line or "3D" in line:
-                        self.update_output(line + "\n")
-
-            else:
-                self.update_output("Unsupported OS\n")
-
-        except Exception as e:
-            self.update_output(f"GPU detection failed: {e}\n")
-
-        self.update_output("=" * 40 + "\n")
-
-    def create_fix_script(self):
-        content = '''
-Write-Host "Fixing Docker Daemon..."
-
-Get-Process "Docker Desktop" -ErrorAction SilentlyContinue | Stop-Process -Force
-
-Stop-Service com.docker.service -ErrorAction SilentlyContinue
-
-wsl --unregister docker-desktop 2>$null
-wsl --unregister docker-desktop-data 2>$null
-
-Start-Process "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"
-
-Start-Sleep 20
-
-docker version
-'''
-        path = os.path.join(tempfile.gettempdir(), "fix_docker.ps1")
-        with open(path, "w") as f:
-            f.write(content)
-        return path
-
-    def fix_docker_daemon(self):
-        if self.running:
-            messagebox.showwarning("Busy", "Wait for script to finish")
+    def handle_tree_data(self, data):
+        if data == "CLEAR_TREE":
+            self.tree.delete(*self.tree.get_children())
             return
+        
+        p = data.split('::')
+        while len(p) < 6: p.append("")
+        
+        row_id = str(uuid.uuid4()) # Fix for duplicate Item IDs
+        tags = ("graph_style",)
+        if "HEAD" in p[2]: tags = ("graph_style", "head_row")
 
-        if not messagebox.askyesno("Confirm", "Restart Docker completely?"):
+        self.tree.insert("", "end", iid=row_id, text=p[0], 
+                         values=(p[1][:8] if p[1].strip() else "", p[2], p[3], p[4], p[5]), 
+                         tags=tags)
+
+    def sync_git_data(self):
+        def task():
+            print("\n--- Starting Sync ---")
+            self.found_branches = []
+            script = os.path.join(self.project_root, "Windows", "manage_branch.ps1")
+            proc = subprocess.Popen(["powershell", "-File", script, "-TargetBranch", "LIST", "-ListOnly"], 
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in proc.stdout: self.parse_git_stream(line)
+            proc.wait()
+            self.root.after(0, lambda: self.branch_combo.config(values=sorted(self.found_branches)))
+            print("--- Sync Finished ---")
+        threading.Thread(target=task, daemon=True).start()
+
+    def start_git_op(self, is_new):
+        name = self.new_branch_entry.get().strip() if is_new else self.branch_combo.get()
+        if not name: 
+            messagebox.showwarning("Warning", "Select or enter a branch name.")
             return
+        threading.Thread(target=self.run_branch_script, args=(name, is_new), daemon=True).start()
 
-        script = self.create_fix_script()
+    def run_branch_script(self, branch_name, create_new, base_point=None):
+        script = os.path.join(self.project_root, "Windows", "manage_branch.ps1")
+        cmd = ["powershell", "-File", script, "-TargetBranch", branch_name]
+        if create_new: cmd.append("-CreateNew")
+        if base_point: cmd.extend(["-BaseCommit", base_point])
+        
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout: self.parse_git_stream(line)
+        proc.wait()
+        self.sync_git_data()
 
-        thread = threading.Thread(target=self.run_fix_script, args=(script,))
-        thread.daemon = True
-        thread.start()
+    def show_tree_context_menu(self, event):
+        item = self.tree.identify_row(event.y)
+        if not item: return
+        self.tree.selection_set(item)
+        sha = self.tree.item(item, "values")[0]
+        if not sha: return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label=f"🌿 New Branch from {sha}", command=lambda: self.prompt_new_branch(sha))
+        menu.post(event.x_root, event.y_root)
 
-    def run_fix_script(self, script):
+    def prompt_new_branch(self, base_sha):
+        name = simpledialog.askstring("New Branch", f"Name for branch starting at {base_sha}:")
+        if name: threading.Thread(target=self.run_branch_script, args=(name, True, base_sha), daemon=True).start()
+
+    def update_git_log(self, text): self.root.after(0, lambda: (self.git_log.insert(tk.END, text), self.git_log.see(tk.END)))
+    
+    # --- JUPYTER LOGIC ---
+    def launch_safe(self): threading.Thread(target=self.run_jupyter_script, daemon=True).start()
+    def run_jupyter_script(self):
         self.running = True
-
-        self.launch_btn.config(state=tk.DISABLED)
-        self.fix_btn.config(state=tk.DISABLED)
-        self.git_config_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-
-        cmd = [
-            "powershell",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script
-        ]
-
-        try:
-            self.process = subprocess.Popen(
-                cmd,
-                cwd=self.project_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-            for line in self.process.stdout:
-                self.update_output(line)
-
-        except Exception as e:
-            self.update_output(str(e))
-
-        finally:
-            self.cleanup()
-
-    def launch_safe(self):
-        if self.running:
-            return
-
-        thread = threading.Thread(target=self.run_script)
-        thread.daemon = True
-        thread.start()
-
-    def run_script(self):
-        self.running = True
-
-        self.launch_btn.config(state=tk.DISABLED)
-        self.fix_btn.config(state=tk.DISABLED)
-        self.git_config_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-
-        system = platform.system()
-
-        try:
-            if system == "Windows":
-                script = os.path.join(self.project_root, "Windows", "jupyter_notebook.ps1")
-                cmd = [
-                    "powershell",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    script
-                ]
-            else:
-                script = os.path.join(self.project_root, "Linux", "jupyter_notebook.sh")
-                cmd = ["bash", script]
-
-            self.process = subprocess.Popen(
-                cmd,
-                cwd=self.project_root,  # current working dir = project root
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-
-            for line in self.process.stdout:
-                self.update_output(line)
-
-        except Exception as e:
-            self.update_output(str(e))
-
-        finally:
-            self.cleanup()
+        self.root.after(0, lambda: (self.launch_btn.config(state=tk.DISABLED), self.stop_btn.config(state=tk.NORMAL)))
+        script = os.path.join(self.project_root, "Windows", "jupyter_notebook.ps1")
+        self.process = subprocess.Popen(["powershell", "-File", script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in self.process.stdout: self.root.after(0, lambda l=line: (self.jupyter_log.insert(tk.END, l), self.jupyter_log.see(tk.END)))
+        self.cleanup()
 
     def stop_safe(self):
-        if not self.process:
-            return
-
-        try:
-            if platform.system() == "Windows":
-                subprocess.run([
-                    "taskkill",
-                    "/F",
-                    "/T",
-                    "/PID",
-                    str(self.process.pid)
-                ])
-            else:
-                self.process.terminate()
-        except Exception:
-            pass
-
+        if self.process: subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.process.pid)], capture_output=True)
         self.cleanup()
 
     def cleanup(self):
         self.running = False
-        self.process = None
-
-        self.launch_btn.config(state=tk.NORMAL)
-        self.fix_btn.config(state=tk.NORMAL)
-        self.git_config_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
-
-        self.update_status("Ready")
+        self.root.after(0, lambda: (self.launch_btn.config(state=tk.NORMAL), self.stop_btn.config(state=tk.DISABLED)))
 
     def safe_exit(self):
-        if self.running:
-            if messagebox.askyesno("Exit", "Stop running script first?"):
-                self.stop_safe()
-
+        if self.running: self.stop_safe()
         self.root.destroy()
-        sys.exit(0)
-
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SafeJupyterLauncher(root)
-    root.mainloop()
+    root = tk.Tk(); app = SafeJupyterLauncher(root); root.mainloop()
