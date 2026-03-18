@@ -15,7 +15,7 @@ Currently in active development where testing code and app code coexist. Git int
 ```bash
 # For Linux
 cd Linux
-./script_name.sh
+./jupyter_notebook.sh
 
 # For Windows
 cd Windows
