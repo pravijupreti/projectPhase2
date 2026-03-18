@@ -54,13 +54,10 @@ function New-Config {
 
 function Execute-Git {
     param([string]$GitParams)
-    
-    # We use Invoke-Expression here for better handling of multi-part strings
     $fullCommand = "git $GitParams 2>&1"
     $result = Invoke-Expression $fullCommand
-    
     if ($LASTEXITCODE -ne 0) {
-        Report-GitError -Command "git $GitParams" -RawOutput ($result -join "`n")
+        Write-Color "GIT ERROR: $result" -Color Red
         return $null
     }
     return $result
@@ -68,57 +65,39 @@ function Execute-Git {
 
 function Main {
     Set-Location $WORKSPACE_PATH
-    Write-Color "Starting Git Process in: $($WORKSPACE_PATH.Path)" -Color Cyan
     
-    # 1. Trust directory
-    $safeDir = $WORKSPACE_PATH.Path.Replace('\', '/')
-    git config --global --add safe.directory $safeDir 2>&1 | Out-Null
+    # 1. Load config saved by Python UI
+    if (Test-Path $CONFIG_FILE) { . $CONFIG_FILE }
+    if (-not $GITHUB_REPO) { Write-Color "No Repo URL found!" -Color Red; return }
 
-    # 2. Load settings
-    Load-Config
-
-    # 3. Initialize
-    if (-not (Test-Path ".git")) {
-        Write-Host "No .git found. Initializing..."
-        Execute-Git "init" | Out-Null
-    }
-
-    # 4. Changes
-    Write-Color "Checking for changes..." -Color Yellow
-    $status = git status --porcelain 2>&1
+    # 2. Add and Commit
+    Write-Color "Staging changes..." -Color Yellow
+    Execute-Git "add ." | Out-Null
     
-    if (-not [string]::IsNullOrWhiteSpace($status)) {
-        Write-Color "Changes found. Staging files..." -Color Green
-        Execute-Git "add ." | Out-Null
-        
-        if ([string]::IsNullOrEmpty((git config user.name))) {
-            git config user.email "jupyter@auto.push"
-            git config user.name "Jupyter User"
-        }
-        
-        Write-Host "Creating commit..."
-        Execute-Git "commit -m 'Auto-backup-$(Get-Date -Format 'HH-mm-ss')'" | Out-Null
+    # Ensure a dummy identity exists so commit doesn't fail
+    git config user.email "jupyter@auto.push"
+    git config user.name "Jupyter User"
+    
+    $date = Get-Date -Format "yyyy-MM-dd HH:mm"
+    Execute-Git "commit -m 'Auto-backup: $date'" | Out-Null
+
+    # 3. The "VS Code Style" Push
+    Write-Color "Pushing $CURRENT_BRANCH to GitHub..." -Color Magenta
+    
+    # Refresh the remote
+    git remote remove origin 2>&1 | Out-Null
+    
+    # TIP: If using a Token, the URL should be: 
+    # https://<token>@github.com/username/repo.git
+    Execute-Git "remote add origin $GITHUB_REPO" | Out-Null
+
+    # Push with upstream tracking and force
+    $push = Execute-Git "push -u origin $CURRENT_BRANCH --force"
+
+    if ($null -ne $push) {
+        Write-Color "✅ PUSH VERIFIED: Check GitHub for branch '$CURRENT_BRANCH'" -Color Green
     } else {
-        Write-Color "No changes to backup." -Color Gray
-    }
-
-    # 5. Push & Publish Logic
-    if (-not [string]::IsNullOrEmpty($GLOBAL_GITHUB_REPO)) {
-        Write-Color "Pushing to GitHub..." -Color Magenta
-        
-        # Reset remote to ensure it always matches current UI config
-        git remote remove origin 2>&1 | Out-Null
-        Execute-Git "remote add origin $GLOBAL_GITHUB_REPO" | Out-Null
-        
-        # FEATURE ADDITION: 
-        # Using -u (upstream) ensures that even new branches are 'published' 
-        # to the remote. --force ensures the backup always overwrites the remote.
-        Write-Color "Publishing/Updating branch: $GLOBAL_CURRENT_BRANCH" -Color Yellow
-        $pushResult = Execute-Git "push -u origin $GLOBAL_CURRENT_BRANCH --force"
-        
-        if ($null -ne $pushResult) {
-            Write-Color "PUSH SUCCESSFUL" -Color Green
-        }
+        Write-Color "❌ PUSH FAILED: Git couldn't reach the server." -Color Red
     }
 }
 
