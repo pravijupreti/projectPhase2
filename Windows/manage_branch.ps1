@@ -29,11 +29,22 @@ function Show-GitTree {
     }
 }
 
+# --- Add this to the LISTING section of manage_branch.ps1 ---
 if ($ListOnly) {
-    # List local and remote branches
-    git branch -a | ForEach-Object {
-        $name = $_.Replace("*", "").Replace("remotes/origin/", "").Trim()
-        if ($name -and $name -notmatch "HEAD ->") { Write-Data "BRANCH" $name }
+    # We use -vv to get the upstream tracking information
+    git branch -vv | ForEach-Object {
+        $line = $_.Trim()
+        # Matches: * branch_name  sha [origin/remote_name] commit_msg
+        if ($line -match "^\*?\s*(?<local>[^\s]+)\s+[a-f0-9]+\s+(\[(?<remote>[^\]]+)\])?") {
+            $local = $Matches['local']
+            $remote = if ($Matches['remote']) { $Matches['remote'] } else { "NO_UPSTREAM" }
+            
+            # Send as a special LINK type for the bottom UI
+            Write-Data "LINK" "$local::$remote"
+            
+            # Keep sending standard BRANCH for the dropdown too
+            Write-Data "BRANCH" $local
+        }
     }
     Show-GitTree
     exit 0
