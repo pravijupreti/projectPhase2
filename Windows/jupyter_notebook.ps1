@@ -1,228 +1,176 @@
 #!/usr/bin/env pwsh
-# jupyter_notebook.ps1
-#Requires -Version 5.1
+# Windows/jupyter_notebook.ps1
+# Main entry with Docker daemon check
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+# Disable strict mode for this script to avoid variable initialization errors
+# Set-StrictMode -Version Latest
+$ErrorActionPreference = "Continue"
 
-# -----------------------------
-# Detect OS
-# -----------------------------
-$osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
-$osName = $osInfo.Caption
-Write-Host "OS: $osName"
+# Suppress warnings
+$WarningPreference = "SilentlyContinue"
 
-if (-not ($osName -match "Windows")) {
-    Write-Host "This script is designed for Windows only"
-    exit 1
-}
+# Get paths
+$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+$modulePath = Join-Path $scriptPath "modules"
 
-# -----------------------------
-# Check Docker daemon
-# -----------------------------
+# Import modules
+Import-Module (Join-Path $modulePath "Core/WorkspaceManager.psm1") -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulePath "Docker/DockerDetection.psm1") -Force -WarningAction SilentlyContinue
+Import-Module (Join-Path $modulePath "Docker/DockerManagement.psm1") -Force -WarningAction SilentlyContinue
+
+# ==================== DOCKER DAEMON CHECK FUNCTION ====================
 function Test-DockerDaemonResponding {
-    docker version --format '{{.Server.Version}}' > $null 2>&1
-    return ($LASTEXITCODE -eq 0)
+    try {
+        docker version --format '{{.Server.Version}}' 2>$null > $null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
 }
 
-# -----------------------------
-# Check Docker CLI
-# -----------------------------
-function Test-DockerInstalled {
-    return (Get-Command docker -ErrorAction SilentlyContinue) -ne $null
-}
-
-# -----------------------------
-# Check Docker Desktop install
-# -----------------------------
-function Test-DockerDesktopInstalled {
-    $paths = @(
-        "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe",
-        "$env:LOCALAPPDATA\Docker\Docker Desktop.exe"
-    )
-    foreach ($p in $paths) {
-        if (Test-Path $p) { return $p }
+function Get-DockerVersion {
+    try {
+        $ver = docker version --format '{{.Server.Version}}' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $ver) {
+            return $ver
+        }
+    }
+    catch {
+        return $null
     }
     return $null
 }
 
-# -----------------------------
-# Stop Docker processes
-# -----------------------------
-function Stop-AllDockerProcesses {
-    Write-Host "Stopping Docker processes..."
-    $patterns = @("Docker Desktop","dockerd","vpnkit","com.docker*")
-    foreach ($p in $patterns) {
-        Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    }
-    taskkill /F /IM "docker*.exe" > $null 2>&1
-    taskkill /F /IM "com.docker*.exe" > $null 2>&1
-    Start-Sleep 5
-}
-
-# -----------------------------
-# Start Docker Desktop
-# -----------------------------
 function Start-DockerDesktop {
-    $dockerExe = Test-DockerDesktopInstalled
+    $dockerPaths = @(
+        "C:\Program Files\Docker\Docker\Docker Desktop.exe",
+        "$env:LOCALAPPDATA\Docker\Docker Desktop.exe"
+    )
+    
+    $dockerExe = $null
+    foreach ($path in $dockerPaths) {
+        if (Test-Path $path) {
+            $dockerExe = $path
+            break
+        }
+    }
+    
     if (-not $dockerExe) {
-        Write-Host "Docker Desktop not found"
+        Write-Host "❌ Docker Desktop not found!" -ForegroundColor Red
+        Write-Host "   Please install Docker Desktop from: https://www.docker.com/products/docker-desktop/" -ForegroundColor Yellow
         return $false
     }
-    Write-Host "Starting Docker Desktop..."
+    
+    Write-Host "🚀 Starting Docker Desktop..." -ForegroundColor Yellow
     Start-Process $dockerExe
-    Write-Host "Waiting for Docker daemon..."
-    for ($i=1; $i -le 40; $i++) {
-        Start-Sleep 3
+    return $true
+}
+
+function Ensure-DockerRunning {
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+    Write-Host "DOCKER DAEMON CHECK" -ForegroundColor Cyan
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+    
+    # Step 1: Check if Docker daemon is responding
+    Write-Host "`n📡 Checking if Docker daemon is responding..." -ForegroundColor Yellow
+    
+    $isResponding = Test-DockerDaemonResponding
+    
+    if ($isResponding) {
+        $dockerVer = Get-DockerVersion
+        if ($dockerVer) {
+            Write-Host "✅ Docker daemon is responding (Version: $dockerVer)" -ForegroundColor Green
+        } else {
+            Write-Host "✅ Docker daemon is responding" -ForegroundColor Green
+        }
+        return $true
+    }
+    
+    Write-Host "⚠️ Docker daemon is NOT responding" -ForegroundColor Red
+    
+    # Step 2: Check if Docker is installed
+    $dockerInstalled = Test-DockerInstalled
+    $dockerDesktop = Test-DockerDesktopInstalled
+    
+    if (-not $dockerInstalled -and -not $dockerDesktop) {
+        Write-Host "❌ Docker is not installed!" -ForegroundColor Red
+        Write-Host "   Please install Docker Desktop from: https://www.docker.com/products/docker-desktop/" -ForegroundColor Yellow
+        return $false
+    }
+    
+    # Step 3: Attempt to start Docker Desktop
+    Write-Host "`n🔧 Attempting to start Docker Desktop..." -ForegroundColor Yellow
+    
+    $started = Start-DockerDesktop
+    if (-not $started) {
+        return $false
+    }
+    
+    # Step 4: Wait for Docker to be ready (up to 30 seconds)
+    Write-Host "⏳ Waiting for Docker daemon to start (max 30 seconds)..." -ForegroundColor Yellow
+    
+    for ($i = 1; $i -le 30; $i++) {
+        Start-Sleep -Seconds 1
+        Write-Host "   ... $i seconds" -NoNewline
+        if ($i -eq 30) { Write-Host "" }
+        else { Write-Host "`r" }
+        
         if (Test-DockerDaemonResponding) {
-            Write-Host "Docker daemon is ready"
+            $dockerVer = Get-DockerVersion
+            Write-Host "`n✅ Docker daemon is now responding" -ForegroundColor Green
+            if ($dockerVer) {
+                Write-Host "   Version: $dockerVer" -ForegroundColor Gray
+            }
             return $true
         }
-        if ($i % 5 -eq 0) {
-            Write-Host "Still waiting... ($i / 40)"
-        }
     }
-    Write-Host "Docker daemon did not respond in time"
+    
+    Write-Host "❌ Docker daemon failed to start after 30 seconds" -ForegroundColor Red
+    Write-Host "   Please start Docker Desktop manually and try again." -ForegroundColor Yellow
     return $false
 }
 
-# -----------------------------
-# Restart Docker
-# -----------------------------
-function Restart-DockerDaemon {
-    Write-Host "Restarting Docker..."
-    Stop-AllDockerProcesses
-    $started = Start-DockerDesktop
-    return $started
-}
+# ==================== MAIN EXECUTION ====================
+# Initialize workspace (reads config silently)
+Initialize-WorkspaceManager
 
-# -----------------------------
-# Pull Docker Image with Progress
-# -----------------------------
-function Pull-DockerImage([string]$image) {
+# Detect OS
+$osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
+$osName = $osInfo.Caption
 
-    Write-Host "`n⬇ Pulling Docker image: $image"
-    Write-Host ("=" * 60)
-
-    try {
-
-        # Run docker pull and stream output live
-        docker pull $image 2>&1 | ForEach-Object {
-            Write-Host $_
-        }
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "`n✅ Image download completed"
-            return $true
-        }
-        else {
-            Write-Host "`n❌ Image pull failed"
-            return $false
-        }
-
-    }
-    catch {
-        Write-Host "`n❌ Docker pull error: $_"
-        return $false
-    }
-}
-
-# -----------------------------
-# MAIN
-# -----------------------------
-Write-Host ""
-Write-Host ("=" * 40)
-Write-Host " DOCKER CHECK"
-Write-Host ("=" * 40)
-
-$dockerInstalled = Test-DockerInstalled
-$daemonRunning = Test-DockerDaemonResponding
-$dockerDesktop = Test-DockerDesktopInstalled
-
-Write-Host ""
-Write-Host "Status:"
-Write-Host "Docker CLI installed: $dockerInstalled"
-Write-Host "Docker daemon running: $daemonRunning"
-Write-Host "Docker Desktop installed: $dockerDesktop"
-
-if ($daemonRunning) {
-    $version = docker version --format '{{.Server.Version}}'
-    Write-Host ""
-    Write-Host "Docker already running (Version $version)"
-    $dockerReady = $true
-}
-elseif ($dockerInstalled -or $dockerDesktop) {
-    Write-Host ""
-    Write-Host "Docker installed but daemon not running"
-    Write-Host "Attempting automatic repair..."
-    $dockerReady = Restart-DockerDaemon
-}
-else {
-    Write-Host ""
-    Write-Host "Docker is not installed. Download Docker Desktop from:"
-    Write-Host "https://www.docker.com/products/docker-desktop/"
+if (-not ($osName -match "Windows")) {
+    Write-Host "ERROR: This script is designed for Windows only" -ForegroundColor Red
     exit 1
 }
 
-# -----------------------------
-# If Docker ready
-# -----------------------------
-if ($dockerReady) {
+# ENSURE DOCKER IS RUNNING - THIS IS CRITICAL
+$dockerReady = Ensure-DockerRunning
+
+if (-not $dockerReady) {
     Write-Host ""
-    Write-Host ("=" * 40)
-    Write-Host " DOCKER READY"
-    Write-Host ("=" * 40)
-
-    Write-Host "`nTesting Docker..."
-    docker run --rm hello-world
-
-    $containerName = "jupyter-tf-gpu"
-    $existing = docker ps -a --format "{{.Names}}"
-
-    if ($existing -contains $containerName) {
-        Write-Host "`nJupyter container exists"
-        $running = docker ps --format "{{.Names}}"
-        if ($running -notcontains $containerName) {
-            Write-Host "Starting container..."
-            docker start $containerName
-        } else {
-            Write-Host "Container already running"
-        }
-    }
-    else {
-        Write-Host "`nNo Jupyter container found"
-        Write-Host "Pulling GPU-enabled Jupyter container..."
-        $image = "tensorflow/tensorflow:latest-gpu-jupyter"
-        $success = Pull-DockerImage $image
-        if ($success) {
-            Write-Host "`nCreating container..."
-            $workspace = (Get-Location).Path
-            docker run -d --name $containerName --gpus all -p 8888:8888 -v "${workspace}:/workspace" $image
-        } else {
-            Write-Host "`n❌ Failed to pull Docker image. Cannot create container."
-            exit 1
-        }
-    }
-
+    Write-Host ("=" * 60) -ForegroundColor Red
+    Write-Host "ERROR: DOCKER IS NOT RUNNING" -ForegroundColor Red
+    Write-Host ("=" * 60) -ForegroundColor Red
     Write-Host ""
-    Write-Host "Launching GPU Jupyter environment..."
+    Write-Host "Please start Docker Desktop manually and then run this script again." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
 
-    $launcher = "$PSScriptRoot\launch_jupyter_gpu.ps1"
+# Launch Jupyter only if Docker is ready
+Write-Host ""
+Write-Host ("=" * 60) -ForegroundColor Green
+Write-Host "DOCKER IS READY - LAUNCHING JUPYTER" -ForegroundColor Green
+Write-Host ("=" * 60) -ForegroundColor Green
 
-    if (Test-Path $launcher) {
-        & $launcher
-    }
-    else {
-        Write-Host "❌ launch_jupyter_gpu.ps1 not found in:"
-        Write-Host $launcher
-    }
+$launcher = Join-Path $scriptPath "launch_jupyter_gpu.ps1"
+
+if (Test-Path $launcher) {
+    & $launcher
 }
 else {
-    Write-Host ""
-    Write-Host "Docker is not ready. Fix Docker manually and run again."
+    Write-Host "ERROR: launch_jupyter_gpu.ps1 not found at: $launcher" -ForegroundColor Red
+    exit 1
 }
-
-Write-Host ""
-Write-Host ("=" * 40)
-Write-Host " Setup complete!"
-Write-Host ("=" * 40)
