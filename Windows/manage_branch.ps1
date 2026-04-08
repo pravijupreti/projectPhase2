@@ -1,14 +1,23 @@
-#manage_branch.ps1
-
 param(
     [Parameter(Mandatory=$true)] [string]$TargetBranch,
     [Parameter(Mandatory=$false)] [switch]$CreateNew,
     [Parameter(Mandatory=$false)] [switch]$ListOnly,
-    [Parameter(Mandatory=$false)] [string]$BaseCommit
+    [Parameter(Mandatory=$false)] [string]$BaseCommit,
+    [Parameter(Mandatory=$false)] [string]$WorkspacePath
 )
 
-$ErrorActionPreference = "Continue" 
-if ($PSScriptRoot -like "*\Windows") { Set-Location "$PSScriptRoot\.." }
+$ErrorActionPreference = "Continue"
+
+# Use WorkspacePath if provided, otherwise fall back to script location
+if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
+    Set-Location $WorkspacePath
+    Write-Output "[LOG] Changed to workspace: $WorkspacePath"
+} elseif ($PSScriptRoot -like "*\Windows") { 
+    Set-Location "$PSScriptRoot\.."
+    Write-Output "[LOG] Changed to parent of Windows folder: $(Get-Location)"
+} else {
+    Write-Output "[LOG] Staying in current directory: $(Get-Location)"
+}
 
 function Write-Data { param([string]$Type, [string]$Msg) Write-Output "[$Type]$Msg" }
 
@@ -31,9 +40,16 @@ function Show-GitTree {
     }
 }
 
-# --- Add this to the LISTING section of manage_branch.ps1 ---
+# --- Listing mode ---
 if ($ListOnly) {
-    # We use -vv to get the upstream tracking information
+    # First, verify we're in a git repository
+    $gitCheck = git rev-parse --git-dir 2>$null
+    if (-not $gitCheck) {
+        Write-Data "ERROR" "Not a git repository: $(Get-Location)"
+        exit 1
+    }
+    
+    # Get branches with tracking info
     git branch -vv | ForEach-Object {
         $line = $_.Trim()
         # Matches: * branch_name  sha [origin/remote_name] commit_msg
@@ -52,11 +68,18 @@ if ($ListOnly) {
     exit 0
 }
 
+# --- Branch operation mode ---
 try {
     if ($CreateNew) {
-        if ($BaseCommit) { git checkout -b $TargetBranch $BaseCommit }
-        else { git checkout -b $TargetBranch }
+        if ($BaseCommit) { 
+            Write-Output "[LOG] Creating branch '$TargetBranch' from commit $BaseCommit"
+            git checkout -b $TargetBranch $BaseCommit
+        } else { 
+            Write-Output "[LOG] Creating new branch '$TargetBranch' from current HEAD"
+            git checkout -b $TargetBranch 
+        }
     } else {
+        Write-Output "[LOG] Switching to branch '$TargetBranch'"
         git checkout $TargetBranch
     }
     Show-GitTree

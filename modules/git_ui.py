@@ -1,90 +1,162 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, scrolledtext
 
 
 class GitUI:
-    """Git tab UI component"""
-    
-    def __init__(self, parent, save_callback, sync_callback, switch_callback, create_callback):
-        self.parent = parent
-        self.save_callback = save_callback
-        self.sync_callback = sync_callback
-        self.switch_callback = switch_callback
-        self.create_callback = create_callback
-        self.create_widgets()
-    
-    def create_widgets(self):
-        """Create all Git tab widgets"""
-        # Configuration Panel
-        config_panel = tk.LabelFrame(self.parent, text=" Configuration ", padx=10, pady=10)
-        config_panel.pack(fill=tk.X, padx=15, pady=10)
-        
-        url_row = tk.Frame(config_panel)
+    """
+    Git tab UI. No git logic — widgets only.
+    """
+
+    def __init__(self, parent, save_cb, sync_cb,
+                 switch_cb, create_cb, push_cb):
+        self.parent    = parent
+        self.save_cb   = save_cb
+        self.sync_cb   = sync_cb
+        self.switch_cb = switch_cb
+        self.create_cb = create_cb
+        self.push_cb   = push_cb
+        self._build()
+
+    def _build(self):
+
+        # ── Config panel ──────────────────────────────────────────
+        cfg = tk.LabelFrame(self.parent, text=" Configuration ",
+                            padx=10, pady=10)
+        cfg.pack(fill=tk.X, padx=15, pady=10)
+
+        # repo URL
+        url_row = tk.Frame(cfg)
         url_row.pack(fill=tk.X, pady=2)
         tk.Label(url_row, text="Repo URL:", width=10, anchor="w").pack(side=tk.LEFT)
         self.repo_entry = tk.Entry(url_row)
         self.repo_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        tk.Button(url_row, text="Save", command=self.save_callback).pack(side=tk.LEFT)
-        
-        branch_row = tk.Frame(config_panel)
-        branch_row.pack(fill=tk.X, pady=10)
-        self.branch_combo = ttk.Combobox(branch_row, width=25, state="readonly")
+        tk.Button(url_row, text="Save",
+                  command=self.save_cb).pack(side=tk.LEFT)
+
+        # branch row
+        br = tk.Frame(cfg)
+        br.pack(fill=tk.X, pady=6)
+
+        self.branch_combo = ttk.Combobox(br, width=22, state="readonly")
         self.branch_combo.pack(side=tk.LEFT, padx=5)
-        tk.Button(branch_row, text="🔄 Sync Tree", command=self.sync_callback,
-                 bg="#9C27B0", fg="white").pack(side=tk.LEFT, padx=5)
-        self.new_branch_entry = tk.Entry(branch_row, width=15)
-        self.new_branch_entry.pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(branch_row, text="Switch", bg="#2196F3", fg="white",
-                 command=self.switch_callback).pack(side=tk.LEFT, padx=2)
-        tk.Button(branch_row, text="Create", bg="#388E3C", fg="white",
-                 command=self.create_callback).pack(side=tk.LEFT, padx=2)
-        
-        # Paned window for tree and log
-        self.paned = ttk.Panedwindow(self.parent, orient=tk.VERTICAL)
-        self.paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
-        
-        # Tree frame (will be filled by TreeView component)
-        self.tree_frame = tk.Frame(self.paned)
-        self.paned.add(self.tree_frame, weight=3)
-        
-        # Log area
-        self.log_area = scrolledtext.ScrolledText(
-            self.paned, height=6, font=("Consolas", 10), bg="#f8f9fa"
+
+        tk.Button(br, text="🔄 Sync Tree",
+                  command=self.sync_cb,
+                  bg="#9C27B0", fg="white").pack(side=tk.LEFT, padx=4)
+
+        self.new_branch_entry = tk.Entry(br, width=20, fg="gray")
+        self.new_branch_entry.insert(0, "new-branch-name")
+        self.new_branch_entry.pack(side=tk.LEFT, padx=4)
+        self.new_branch_entry.bind("<FocusIn>",  self._ph_clear)
+        self.new_branch_entry.bind("<FocusOut>", self._ph_restore)
+
+        tk.Button(br, text="Switch",
+                  bg="#2196F3", fg="white",
+                  command=self.switch_cb).pack(side=tk.LEFT, padx=2)
+        tk.Button(br, text="Create",
+                  bg="#388E3C", fg="white",
+                  command=self.create_cb).pack(side=tk.LEFT, padx=2)
+
+        # ── Push panel ────────────────────────────────────────────
+        push_panel = tk.LabelFrame(self.parent, text=" Push to GitHub ",
+                                   padx=10, pady=8)
+        push_panel.pack(fill=tk.X, padx=15, pady=(0, 6))
+
+        push_row = tk.Frame(push_panel)
+        push_row.pack(fill=tk.X)
+
+        self.push_btn = tk.Button(
+            push_row,
+            text="⬆  Push Changes",
+            bg="#1565C0", fg="white",
+            font=("Segoe UI", 10, "bold"),
+            padx=16, pady=6,
+            command=self.push_cb,
         )
-        self.paned.add(self.log_area, weight=1)
-        
-        # Hierarchy frame (will be filled by HierarchyDrawer)
-        self.hierarchy_frame = tk.LabelFrame(self.parent, text=" Branch Linkage Hierarchy ", padx=5, pady=5)
-        self.hierarchy_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=15, pady=10)
-    
-    def get_repo_entry(self):
-        return self.repo_entry
-    
-    def get_branch_combo(self):
-        return self.branch_combo
-    
-    def get_new_branch_entry(self):
-        return self.new_branch_entry
-    
-    def get_tree_frame(self):
-        return self.tree_frame
-    
-    def get_hierarchy_frame(self):
-        return self.hierarchy_frame
-    
-    def get_log_area(self):
-        return self.log_area
-    
-    def update_log(self, text):
-        """Update log area"""
-        def update():
+        self.push_btn.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.push_status_var = tk.StringVar(value="Ready")
+        self.push_status_lbl = tk.Label(
+            push_row,
+            textvariable=self.push_status_var,
+            fg="#555555", font=("Segoe UI", 9),
+        )
+        self.push_status_lbl.pack(side=tk.LEFT)
+
+        # ── Paned: commit graph + log ─────────────────────────────
+        paned = ttk.Panedwindow(self.parent, orient=tk.VERTICAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+
+        self.tree_frame = tk.LabelFrame(paned, text=" Commit Graph ",
+                                        padx=2, pady=2)
+        paned.add(self.tree_frame, weight=3)
+
+        self.log_area = scrolledtext.ScrolledText(
+            paned, height=7, font=("Consolas", 10), bg="#f8f9fa"
+        )
+        paned.add(self.log_area, weight=1)
+
+        # ── Branch hierarchy (bottom) ─────────────────────────────
+        self.hierarchy_frame = tk.LabelFrame(
+            self.parent,
+            text=" Branch Linkage Hierarchy ",
+            padx=5, pady=5,
+        )
+        self.hierarchy_frame.pack(fill=tk.X, side=tk.BOTTOM,
+                                  padx=15, pady=10)
+
+    # ── placeholder ───────────────────────────────────────────────
+
+    def _ph_clear(self, _e):
+        if self.new_branch_entry.get() == "new-branch-name":
+            self.new_branch_entry.delete(0, tk.END)
+            self.new_branch_entry.config(fg="black")
+
+    def _ph_restore(self, _e):
+        if not self.new_branch_entry.get().strip():
+            self.new_branch_entry.insert(0, "new-branch-name")
+            self.new_branch_entry.config(fg="gray")
+
+    # ── push state ────────────────────────────────────────────────
+
+    def set_push_busy(self, busy: bool):
+        def _u():
+            self.push_btn.config(
+                state=tk.DISABLED if busy else tk.NORMAL,
+                text="⏳ Pushing…" if busy else "⬆  Push Changes",
+            )
+        self.push_btn.after(0, _u)
+
+    def set_push_status(self, text: str, color: str = "#555555"):
+        def _u():
+            self.push_status_var.set(text)
+            self.push_status_lbl.config(fg=color)
+        self.push_status_lbl.after(0, _u)
+
+    # ── getters ───────────────────────────────────────────────────
+
+    def get_repo_entry(self):       return self.repo_entry
+    def get_branch_combo(self):     return self.branch_combo
+    def get_new_branch_entry(self): return self.new_branch_entry
+    def get_tree_frame(self):       return self.tree_frame
+    def get_hierarchy_frame(self):  return self.hierarchy_frame
+
+    # ── updaters (thread-safe) ────────────────────────────────────
+
+    def update_log(self, text: str):
+        def _u():
             self.log_area.insert(tk.END, text)
             self.log_area.see(tk.END)
-        self.log_area.master.after(0, update)
-    
-    def update_branches(self, branches):
-        """Update branch combo box"""
-        def update():
+        self.log_area.after(0, _u)
+
+    def update_branches(self, branches: list):
+        def _u():
+            cur = self.branch_combo.get()
             self.branch_combo.config(values=sorted(branches))
-        self.branch_combo.master.after(0, update)
+            if cur in branches:
+                self.branch_combo.set(cur)
+        self.branch_combo.after(0, _u)
+
+    def set_repo_url(self, url: str):
+        self.repo_entry.delete(0, tk.END)
+        self.repo_entry.insert(0, url)

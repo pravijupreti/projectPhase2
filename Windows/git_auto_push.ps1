@@ -1,118 +1,110 @@
 # git_auto_push.ps1
-$ErrorActionPreference = "Continue"
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$WorkspacePath
+)
 
-# --- CONFIGURATION ---
+$ErrorActionPreference = "Continue"
 $CONFIG_FILE = Join-Path $HOME ".jupyter_git_config.ps1"
-$DEFAULT_BRANCH = "main"
-$WORKSPACE_PATH = Get-Location
-# ---------------------
 
 function Write-Color {
     param([string]$Message, [ConsoleColor]$Color)
     Write-Host $Message -ForegroundColor $Color
 }
 
-function Report-GitError {
-    param([string]$Command, [string]$RawOutput)
-    Write-Host "`n"
-    Write-Color "GIT ERROR DETECTED" -Color Red
-    Write-Color "Command: $Command" -Color Yellow
-    Write-Color "Exit Code: $LASTEXITCODE" -Color White
-    Write-Color "RAW SYSTEM MESSAGE:" -Color Cyan
-    Write-Host $RawOutput
-    Write-Host "`n"
-}
-
 function Load-Config {
     if (Test-Path $CONFIG_FILE) {
         try {
             . $CONFIG_FILE
-            $global:GLOBAL_GITHUB_REPO = $GITHUB_REPO
-            $global:GLOBAL_CURRENT_BRANCH = $CURRENT_BRANCH
-            Write-Color "Config loaded: $GLOBAL_GITHUB_REPO" -Color Green
+            $global:REPO_URL = $GITHUB_REPO
+            $global:TARGET_BRANCH = $CURRENT_BRANCH
+            Write-Color "Config loaded: $global:REPO_URL branch: $global:TARGET_BRANCH" -Color Green
         } catch {
-            Write-Color "Config corrupted. Re-entering details." -Color Yellow
-            New-Config
+            Write-Color "Config file corrupted: $_" -Color Red
+            exit 1
         }
     } else {
-        New-Config
+        Write-Color "No config file found at $CONFIG_FILE - cannot push." -Color Red
+        exit 1
     }
-}
-
-function New-Config {
-    $repo = Read-Host "Enter GitHub repository URL"
-    $branch = Read-Host "Enter branch name (default: main)"
-    $global:GLOBAL_GITHUB_REPO = $repo
-    $global:GLOBAL_CURRENT_BRANCH = if ([string]::IsNullOrWhiteSpace($branch)) { "main" } else { $branch }
-    
-    $configLines = @(
-        "`$GITHUB_REPO = '$GLOBAL_GITHUB_REPO'",
-        "`$CURRENT_BRANCH = '$GLOBAL_CURRENT_BRANCH'"
-    )
-    $configLines | Out-File -FilePath $CONFIG_FILE -Encoding utf8 -Force
 }
 
 function Execute-Git {
     param([string]$GitParams)
-    
-    # We use Invoke-Expression here for better handling of multi-part strings
-    $fullCommand = "git $GitParams 2>&1"
-    $result = Invoke-Expression $fullCommand
-    
+    $result = Invoke-Expression "git $GitParams 2>&1"
     if ($LASTEXITCODE -ne 0) {
-        Report-GitError -Command "git $GitParams" -RawOutput ($result -join "`n")
+        Write-Color "GIT ERROR: git $GitParams" -Color Red
+        Write-Host ($result -join "`n")
         return $null
     }
     return $result
 }
 
-function Main {
-    Set-Location $WORKSPACE_PATH
-    Write-Color "Starting Git Process in: $($WORKSPACE_PATH.Path)" -Color Cyan
-    
-    # 1. Trust directory
-    $safeDir = $WORKSPACE_PATH.Path.Replace('\', '/')
-    git config --global --add safe.directory $safeDir 2>&1 | Out-Null
+if (-not (Test-Path $WorkspacePath)) {
+    Write-Color "Workspace path not found: $WorkspacePath" -Color Red
+    exit 1
+}
 
-    # 2. Load settings
-    Load-Config
+Set-Location $WorkspacePath
+Write-Color "Working directory: $WorkspacePath" -Color Cyan
 
-    # 3. Initialize
-    if (-not (Test-Path ".git")) {
-        Write-Host "No .git found. Initializing..."
-        Execute-Git "init" | Out-Null
-    }
+$safePath = $WorkspacePath.Replace('\', '/')
+git config --global --add safe.directory $safePath 2>&1 | Out-Null
 
-    # 4. Changes
-    Write-Color "Checking for changes..." -Color Yellow
-    $status = git status --porcelain 2>&1
-    
-    if (-not [string]::IsNullOrWhiteSpace($status)) {
-        Write-Color "Changes found. Staging files..." -Color Green
-        Execute-Git "add ." | Out-Null
-        
-        if ([string]::IsNullOrEmpty((git config user.name))) {
-            git config user.email "jupyter@auto.push"
-            git config user.name "Jupyter User"
-        }
-        
-        Write-Host "Creating commit..."
-        Execute-Git "commit -m 'Auto-backup-$(Get-Date -Format 'HH-mm-ss')'" | Out-Null
-    } else {
-        Write-Color "No changes to backup." -Color Gray
-    }
+Load-Config
 
-    # 5. Push
-    if (-not [string]::IsNullOrEmpty($GLOBAL_GITHUB_REPO)) {
-        Write-Color "Pushing to GitHub..." -Color Magenta
-        git remote remove origin 2>&1 | Out-Null
-        Execute-Git "remote add origin $GLOBAL_GITHUB_REPO" | Out-Null
-        
-        $pushResult = Execute-Git "push origin $GLOBAL_CURRENT_BRANCH"
-        if ($null -ne $pushResult) {
-            Write-Color "PUSH SUCCESSFUL" -Color Green
-        }
+if (-not (Test-Path ".git")) {
+    Write-Color "No .git found - initialising new repository..." -Color Yellow
+    Execute-Git "init" | Out-Null
+    if (-not [string]::IsNullOrEmpty($global:REPO_URL)) {
+        Execute-Git "remote add origin $global:REPO_URL" | Out-Null
     }
 }
 
-Main
+$currentRemote = git remote get-url origin 2>&1
+if ($LASTEXITCODE -eq 0 -and $currentRemote.Trim() -ne $global:REPO_URL.Trim()) {
+    Write-Color "Remote URL changed - updating origin..." -Color Yellow
+    git remote set-url origin $global:REPO_URL 2>&1 | Out-Null
+}
+
+if ([string]::IsNullOrEmpty((git config user.name 2>&1))) {
+    git config user.email "jupyter@auto.push"
+    git config user.name "Jupyter Auto Push"
+}
+
+$status = git status --porcelain 2>&1
+if (-not [string]::IsNullOrWhiteSpace($status)) {
+    Write-Color "Changes detected - staging..." -Color Green
+    Execute-Git "add ." | Out-Null
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Execute-Git "commit -m 'Auto-backup $timestamp'" | Out-Null
+    Write-Color "Commit created." -Color Green
+} else {
+    Write-Color "No changes to commit." -Color Gray
+}
+
+if ([string]::IsNullOrEmpty($global:REPO_URL)) {
+    Write-Color "No repo URL configured - skipping push." -Color Yellow
+    exit 0
+}
+
+Write-Color "Pushing to $global:REPO_URL ($global:TARGET_BRANCH)..." -Color Magenta
+
+git remote get-url origin 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Execute-Git "remote add origin $global:REPO_URL" | Out-Null
+}
+
+$pushResult = Execute-Git "push origin $global:TARGET_BRANCH"
+if ($null -ne $pushResult) {
+    Write-Color "PUSH SUCCESSFUL" -Color Green
+} else {
+    Write-Color "Retrying with --set-upstream..." -Color Yellow
+    $pushResult = Execute-Git "push --set-upstream origin $global:TARGET_BRANCH"
+    if ($null -ne $pushResult) {
+        Write-Color "PUSH SUCCESSFUL (upstream set)" -Color Green
+    } else {
+        Write-Color "PUSH FAILED" -Color Red
+        exit 1
+    }
+}
