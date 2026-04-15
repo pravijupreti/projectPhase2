@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 
-# Use WorkspacePath if provided, otherwise fall back to script location
+# --- Workspace handling ---
 if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
     Set-Location $WorkspacePath
     Write-Output "[LOG] Changed to workspace: $WorkspacePath"
@@ -19,8 +19,39 @@ if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
     Write-Output "[LOG] Staying in current directory: $(Get-Location)"
 }
 
-function Write-Data { param([string]$Type, [string]$Msg) Write-Output "[$Type]$Msg" }
+function Write-Data { 
+    param([string]$Type, [string]$Msg) 
+    Write-Output "[$Type]$Msg" 
+}
 
+# --- Debug Info ---
+function Show-DebugInfo {
+    Write-Output "===== DEBUG: CURRENT PATH ====="
+    Write-Output (Get-Location)
+
+    Write-Output "===== DEBUG: REPO ROOT ====="
+    git rev-parse --show-toplevel 2>$null
+
+    Write-Output "===== DEBUG: REMOTES ====="
+    git remote -v
+
+    Write-Output "===== DEBUG: STATUS ====="
+    git status
+
+    Write-Output "===== DEBUG: git branch ====="
+    git branch
+
+    Write-Output "===== DEBUG: git branch -a ====="
+    git branch -a
+
+    Write-Output "===== DEBUG: git branch -r ====="
+    git branch -r
+
+    Write-Output "===== DEBUG: git for-each-ref ====="
+    git for-each-ref --format="%(refname:short)"
+}
+
+# --- Git Tree ---
 function Show-GitTree {
     Write-Data "TREE" "CLEAR_TREE"
     $fmt = "%H::%d::%an::%ar::%s"
@@ -28,13 +59,11 @@ function Show-GitTree {
     
     Invoke-Expression $gitCmd | ForEach-Object {
         $line = $_
-        # If line contains a 40-character SHA
         if ($line -match "(?<sha>[a-f0-9]{40})::") {
             if ($line -match "^(?<graph>.*?)(?<sha>[a-f0-9]{40})::(?<data>.*)$") {
                 Write-Data "TREE" "$($Matches['graph'])::$($Matches['sha'])::$($Matches['data'])"
             }
         } else {
-            # Graph-only lines (connectors)
             Write-Data "TREE" "$line:: :: :: :: :: "
         }
     }
@@ -42,28 +71,65 @@ function Show-GitTree {
 
 # --- Listing mode ---
 if ($ListOnly) {
-    # First, verify we're in a git repository
+
     $gitCheck = git rev-parse --git-dir 2>$null
     if (-not $gitCheck) {
         Write-Data "ERROR" "Not a git repository: $(Get-Location)"
         exit 1
     }
-    
-    # Get branches with tracking info
-    git branch -vv | ForEach-Object {
-        $line = $_.Trim()
-        # Matches: * branch_name  sha [origin/remote_name] commit_msg
-        if ($line -match "^\*?\s*(?<local>[^\s]+)\s+[a-f0-9]+\s+(\[(?<remote>[^\]]+)\])?") {
-            $local = $Matches['local']
-            $remote = if ($Matches['remote']) { $Matches['remote'] } else { "NO_UPSTREAM" }
-            
-            # Send as a special LINK type for the bottom UI
-            Write-Data "LINK" "$local::$remote"
-            
-            # Keep sending standard BRANCH for the dropdown too
-            Write-Data "BRANCH" $local
+
+    # Always sync with remote
+    git fetch --all | Out-Null
+
+    $seen = @{}
+
+    Write-Output "===== DEBUG: LOCAL BRANCHES ====="
+    $localBranches = git for-each-ref --format="%(refname:short)" refs/heads
+    $localBranches | ForEach-Object { Write-Output "LOCAL: $_" }
+
+    foreach ($branch in $localBranches) {
+        $branch = $branch.Trim()
+        if (-not $branch) { continue }
+
+        $seen[$branch] = $true
+
+        # upstream (safe)
+        $upstream = git for-each-ref --format="%(upstream:short)" "refs/heads/$branch"
+
+        if ($upstream) {
+            Write-Data "LINK" "$branch::$upstream"
+        } else {
+            Write-Data "LINK" "$branch::LOCAL"
         }
+
+        Write-Data "BRANCH" $branch
     }
+
+    Write-Output "===== DEBUG: REMOTE BRANCHES ====="
+    $remoteBranches = git for-each-ref --format="%(refname:short)" refs/remotes
+    $remoteBranches | ForEach-Object { Write-Output "REMOTE: $_" }
+
+    foreach ($branch in $remoteBranches) {
+        $branch = $branch.Trim()
+        if ($branch -notmatch "^origin/") { continue }
+        
+        if (-not $branch) { continue }
+        if ($branch -match "HEAD") { continue }
+
+        # Remove origin/ prefix
+        if ($branch -match "^origin/(.+)") {
+            $cleanName = $Matches[1]
+        } else {
+            $cleanName = $branch
+        }
+
+        # Skip if already exists locally
+        if ($seen.ContainsKey($cleanName)) { continue }
+
+        Write-Data "LINK" "$cleanName::REMOTE"
+        Write-Data "BRANCH" $cleanName
+    }
+
     Show-GitTree
     exit 0
 }
@@ -82,7 +148,9 @@ try {
         Write-Output "[LOG] Switching to branch '$TargetBranch'"
         git checkout $TargetBranch
     }
+
     Show-GitTree
+
 } catch {
     Write-Data "ERROR" "Operation failed: $_"
     Show-GitTree

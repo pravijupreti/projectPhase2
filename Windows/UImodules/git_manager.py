@@ -1,6 +1,7 @@
 import os
 import subprocess
 import threading
+from tkinter import filedialog, messagebox
 
 
 class GitManager:
@@ -14,13 +15,57 @@ class GitManager:
                              requires -WorkspacePath (Docker volume path)
     """
 
-    def __init__(self, project_root: str, update_output_callback):
+    def __init__(self, project_root: str, update_output_callback, workspace_manager=None):
         self.project_root  = project_root
         self.update_output = update_output_callback
+        self.workspace_manager = workspace_manager  # ADD THIS
         self.found_branches: list[str] = []
         self.branch_links:   list[tuple] = []
         self.git_script  = os.path.join(project_root, "Windows", "manage_branch.ps1")
         self.push_script = os.path.join(project_root, "Windows", "git_auto_push.ps1")
+
+    # ── workspace helper ────────────────────────────────────────
+
+    def _ensure_workspace(self) -> str:
+        """
+        Check if workspace exists, if not ask user to select one.
+        Returns workspace path or None if cancelled.
+        """
+        if not self.workspace_manager:
+            return None
+            
+        workspace = self.workspace_manager.get_workspace_path()
+        
+        # Check if workspace is valid
+        if workspace and workspace != self.workspace_manager._get_default_workspace():
+            if os.path.exists(workspace):
+                return workspace
+        
+        # No valid workspace - ask user
+        response = messagebox.askyesno(
+            "Workspace Required",
+            "No working directory selected.\n\n"
+            "Git operations require a workspace folder.\n"
+            "Would you like to select a folder now?"
+        )
+        
+        if not response:
+            return None
+        
+        # Let user select folder
+        workspace = filedialog.askdirectory(
+            title="Select Workspace Directory",
+            initialdir=os.path.expanduser("~/Desktop")
+        )
+        
+        if not workspace:
+            messagebox.showwarning("No Selection", "Workspace not selected. Operation cancelled.")
+            return None
+        
+        # Save the selected workspace
+        self.workspace_manager.set_workspace_path(workspace)
+        self.update_output(f"✅ Workspace set to: {workspace}\n")
+        return workspace
 
     # ── internal: run powershell in thread ────────────────────────
 
@@ -59,7 +104,7 @@ class GitManager:
     # ── manage_branch.ps1 stream parser ──────────────────────────
 
     def _parse_stream(self, line: str,
-                      branch_cb=None, tree_cb=None, link_cb=None, error_cb=None):  # ← ADD error_cb
+                      branch_cb=None, tree_cb=None, link_cb=None, error_cb=None):
         """
         Protocol from manage_branch.ps1:
             [BRANCH] name
@@ -93,7 +138,7 @@ class GitManager:
 
         elif line.startswith("[ERROR]"):
             self.update_output(f"❌ {line[7:].strip()}\n")
-            if error_cb:  # ← ADD THIS
+            if error_cb:
                 error_cb(line[7:].strip())
 
         else:
@@ -101,17 +146,24 @@ class GitManager:
 
     # ── public: branch / tree ─────────────────────────────────────
 
-    def sync_git_data(self, workspace_path: str,
-                      branch_cb=None, tree_cb=None, link_cb=None, error_cb=None):  # ← ADD error_cb
+    def sync_git_data(self, workspace_path: str = None,
+                      branch_cb=None, tree_cb=None, link_cb=None, error_cb=None):
         """
         List all branches and commit tree from workspace_path.
-        workspace_path = Docker volume path, e.g. C:/workspace
+        If workspace_path not provided, will ask user to select one.
         """
+        # Check workspace
+        if not workspace_path:
+            workspace_path = self._ensure_workspace()
+            if not workspace_path:
+                self.update_output("❌ No workspace selected. Operation cancelled.\n")
+                return
+        
         self.found_branches.clear()
         self.branch_links.clear()
 
         def _on_line(line):
-            self._parse_stream(line, branch_cb, tree_cb, link_cb, error_cb)  # ← ADD error_cb
+            self._parse_stream(line, branch_cb, tree_cb, link_cb, error_cb)
 
         self._powershell(
             [
@@ -123,12 +175,23 @@ class GitManager:
             on_line=_on_line,
         )
 
-    def run_branch_operation(self, workspace_path: str,
-                             branch_name: str,
+    def run_branch_operation(self, workspace_path: str = None,
+                             branch_name: str = None,
                              create_new: bool = False,
                              base_commit: str = None,
-                             branch_cb=None, tree_cb=None, link_cb=None, error_cb=None):  # ← ADD error_cb
+                             branch_cb=None, tree_cb=None, link_cb=None, error_cb=None):
         """Switch to or create a branch inside workspace_path."""
+        if not branch_name:
+            self.update_output("❌ No branch name provided.\n")
+            return
+            
+        # Check workspace
+        if not workspace_path:
+            workspace_path = self._ensure_workspace()
+            if not workspace_path:
+                self.update_output("❌ No workspace selected. Operation cancelled.\n")
+                return
+        
         cmd = [
             "-File", self.git_script,
             "-TargetBranch", branch_name,
@@ -140,22 +203,33 @@ class GitManager:
             cmd.extend(["-BaseCommit", base_commit])
 
         def _on_line(line):
-            self._parse_stream(line, branch_cb, tree_cb, link_cb, error_cb)  # ← ADD error_cb
+            self._parse_stream(line, branch_cb, tree_cb, link_cb, error_cb)
 
         self._powershell(cmd, on_line=_on_line)
 
     # ── public: push ──────────────────────────────────────────────
 
-    def push_to_github(self, workspace_path: str, done_callback=None):
+    def push_to_github(self, workspace_path: str = None, done_callback=None):
         """
         Run git_auto_push.ps1 -WorkspacePath <workspace_path>.
         The script handles init / remote update / commit / push.
         All output streams to the git log panel.
         """
+        # Check workspace
+        if not workspace_path:
+            workspace_path = self._ensure_workspace()
+            if not workspace_path:
+                self.update_output("❌ No workspace selected. Push cancelled.\n")
+                if done_callback:
+                    done_callback()
+                return
+        
         if not os.path.exists(self.push_script):
             self.update_output(
                 f"❌ Push script not found:\n   {self.push_script}\n"
             )
+            if done_callback:
+                done_callback()
             return
 
         self.update_output(f"🚀 Pushing from: {workspace_path}\n")
