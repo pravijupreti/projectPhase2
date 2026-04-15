@@ -3,8 +3,7 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
-from modules import (
-    ProcessManager,
+from Windows.UImodules import (
     GitManager,
     JupyterUI,
     GitUI,
@@ -18,21 +17,10 @@ from modules import (
     SystemCheckUI,
 )
 
+from helper.script_caller import ScriptCaller
+
 
 class SafeJupyterLauncher:
-    """
-    Main application — coordinates all modules.
-
-    Push flow:
-        "Push Changes" button
-            → _push_to_github()          [saves config so script has latest URL]
-                → GitManager.push_to_github(done_cb)
-                    → runs git_auto_push.ps1 in daemon thread
-                      (script owns workspace via Docker volume / Get-Location)
-                    → stdout lines stream → GitUI log panel
-                → _on_push_done()        [re-enables button, syncs tree]
-    """
-
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Project Control Center")
@@ -42,11 +30,11 @@ class SafeJupyterLauncher:
         # ── managers ──────────────────────────────────────────────
         self.workspace_manager = WorkspaceManager(self.update_log)
         self.port_manager      = PortManager(self.update_log)
-        self.process_manager   = ProcessManager(
-            self.update_jupyter_log, self.update_jupyter_state
-        )
-        self.git_manager    = GitManager(self.project_root, self.update_git_log)
-        self.system_checker = SystemChecker(self.update_log)
+        self.git_manager       = GitManager(self.project_root, self.update_git_log, self.workspace_manager)
+        self.system_checker    = SystemChecker(self.update_log)
+
+        # ── Script caller (centralized) ──────────────────────────
+        self.script_caller = ScriptCaller(self.project_root, self.workspace_manager, self.update_log)
 
         self.root.protocol("WM_DELETE_WINDOW", self.safe_exit)
 
@@ -72,10 +60,6 @@ class SafeJupyterLauncher:
 
         self._load_repo_config()
 
-    # ══════════════════════════════════════════════════════════════
-    # TAB SETUP
-    # ══════════════════════════════════════════════════════════════
-
     def _setup_jupyter_tab(self):
         self.jupyter_ui = JupyterUI(
             self.tab_jupyter,
@@ -87,7 +71,6 @@ class SafeJupyterLauncher:
         self.jupyter_ui.update_workspace_display()
 
     def _on_git_error(self, error_msg: str):
-        """Handle Git errors (no repo, no branches, etc.)"""
         self.root.after(0, lambda: messagebox.showerror("Git Error", error_msg))
         self.root.after(0, lambda: self.git_ui.update_log(f"❌ {error_msg}\n"))
     
@@ -99,6 +82,7 @@ class SafeJupyterLauncher:
             switch_cb = self._switch_branch,
             create_cb = self._create_branch,
             push_cb   = self._push_to_github,
+            workspace_manager = self.workspace_manager,
         )
         self.tree_view        = TreeView(self.git_ui.get_tree_frame())
         self.hierarchy_drawer = HierarchyDrawer(self.git_ui.get_hierarchy_frame())
@@ -132,8 +116,7 @@ class SafeJupyterLauncher:
     # ══════════════════════════════════════════════════════════════
 
     def launch_jupyter(self):
-        workspace  = self.workspace_manager.get_workspace_path()
-        port       = self.port_manager.get_saved_port()
+        port = self.port_manager.get_saved_port()
         validation = self.port_manager.validate_port(port)
 
         if not validation["valid"]:
@@ -144,12 +127,20 @@ class SafeJupyterLauncher:
             )
             return
 
-        self.update_log(f"Launching Jupyter — workspace: {workspace}  port: {port}")
-        script = os.path.join(self.project_root, "Windows", "jupyter_notebook.ps1")
-        self.process_manager.run_jupyter_script(script, self.project_root)
+        self.update_log(f"Launching Jupyter on port: {port}")
+        
+        try:
+            self.script_caller.jupyter_script(port, self.update_jupyter_state)
+            self.update_log("✅ Jupyter launch initiated")
+        except Exception as e:
+            error_msg = f"❌ Failed to launch Jupyter: {str(e)}"
+            self.update_log(error_msg)
+            messagebox.showerror("Launch Error", error_msg)
 
     def stop_jupyter(self):
-        self.process_manager.stop()
+        self.update_log("Stopping Jupyter...")
+        self.script_caller.stop_jupyter()
+        self.update_log("✅ Jupyter stopped")
 
     # ══════════════════════════════════════════════════════════════
     # GIT ACTIONS
@@ -159,23 +150,23 @@ class SafeJupyterLauncher:
         repo   = self.git_ui.get_repo_entry().get().strip()
         branch = self.git_ui.get_branch_combo().get() or "main"
         self.git_manager.save_repo_config(repo, branch)
-        messagebox.showinfo("Saved", f"Config saved  (branch: {branch})")
+        messagebox.showinfo("Saved", f"Config saved (branch: {branch})")
+        self.update_log(f"✅ Repo config saved: {repo} (branch: {branch})")
 
     def _load_repo_config(self):
         url = self.git_manager.load_repo_config()
         if url:
             self.git_ui.set_repo_url(url)
+            self.update_log(f"Loaded repo config: {url}")
 
     def _sync_git(self):
+        self.update_log("Syncing git data...")
         self.tree_view.clear()
-        workspace_path = self.workspace_manager.get_workspace_path()
-    
         self.git_manager.sync_git_data(
-            workspace_path,
-            branch_cb = self._on_branch_found,
-            tree_cb   = self._on_tree_line,
-            link_cb   = self._on_link_found,
-            error_cb  = self._on_git_error
+            branch_cb=self._on_branch_found,
+            tree_cb=self._on_tree_line,
+            link_cb=self._on_link_found,
+            error_cb=self._on_git_error
         )
 
     def _switch_branch(self):
@@ -183,6 +174,7 @@ class SafeJupyterLauncher:
         if not branch:
             messagebox.showwarning("Warning", "Select a branch to switch to.")
             return
+        self.update_log(f"Switching to branch: {branch}")
         self._save_repo()
         self._run_branch_op(branch, create_new=False)
 
@@ -191,34 +183,23 @@ class SafeJupyterLauncher:
         if not branch or branch == "new-branch-name":
             messagebox.showwarning("Warning", "Enter a branch name.")
             return
+        self.update_log(f"Creating new branch: {branch}")
         self._save_repo()
         self._run_branch_op(branch, create_new=True)
         self.git_ui.get_new_branch_entry().delete(0, tk.END)
 
-    def _run_branch_op(self, branch_name: str, create_new: bool,
-                       base_commit: str = None):
-        workspace_path = self.workspace_manager.get_workspace_path()
-    
-        self.git_manager.run_branch_operation(
-            workspace_path,
-            branch_name,
-            create_new      = create_new,
-            base_commit     = base_commit,
-            branch_cb       = self._on_branch_found,
-            tree_cb         = self._on_tree_line,
-            link_cb         = self._on_link_found,
-            error_cb        = self._on_git_error,
+    def _run_branch_op(self, branch_name: str, create_new: bool, base_commit: str = None):
+        self.script_caller.git_branch_script(branch_name, create_new, base_commit)
+        
+        # Then refresh git data
+        self.git_manager.sync_git_data(
+            branch_cb=self._on_branch_found,
+            tree_cb=self._on_tree_line,
+            link_cb=self._on_link_found,
+            error_cb=self._on_git_error,
         )
 
-    # ── push ──────────────────────────────────────────────────────
-
     def _push_to_github(self):
-        """
-        Only responsibility: ensure config is written so the script
-        has the latest repo URL + branch, then hand off entirely to
-        git_auto_push.ps1.  Workspace comes from the Docker volume
-        inside the script (Get-Location) — Python passes nothing extra.
-        """
         repo = self.git_ui.get_repo_entry().get().strip()
         if not repo:
             messagebox.showwarning(
@@ -227,27 +208,23 @@ class SafeJupyterLauncher:
             )
             return
 
-        # write config so git_auto_push.ps1 picks up the current values
         branch = self.git_ui.get_branch_combo().get() or "main"
         self.git_manager.save_repo_config(repo, branch)
 
         self.git_ui.set_push_busy(True)
         self.git_ui.set_push_status("Pushing…", "#1565C0")
+        self.update_log(f"Pushing to GitHub: {repo} (branch: {branch})")
 
-        workspace_path = self.workspace_manager.get_workspace_path()
-        self.git_manager.push_to_github(workspace_path, done_callback=self._on_push_done)
+        self.script_caller.git_push_script(self._on_push_done)
 
     def _on_push_done(self):
-        """Worker thread calls this when git_auto_push.ps1 exits."""
         self.root.after(0, self._push_finished)
 
     def _push_finished(self):
         self.git_ui.set_push_busy(False)
         self.git_ui.set_push_status("✅ Push complete", "#2E7D32")
-        # refresh tree so the new auto-backup commit appears
+        self.update_log("✅ Git push completed successfully")
         self._sync_git()
-
-    # ── context menu ──────────────────────────────────────────────
 
     def _on_tree_right_click(self, event):
         sha = self.tree_view.get_selected_sha(event.y)
@@ -267,10 +244,6 @@ class SafeJupyterLauncher:
         if name:
             self._run_branch_op(name, create_new=True, base_commit=base_sha)
 
-    # ══════════════════════════════════════════════════════════════
-    # GIT CALLBACKS  (GitManager worker threads → main thread)
-    # ══════════════════════════════════════════════════════════════
-
     def _on_branch_found(self, _branch: str):
         self.root.after(
             0, lambda: self.git_ui.update_branches(self.git_manager.found_branches)
@@ -288,37 +261,36 @@ class SafeJupyterLauncher:
             ),
         )
 
-    # ══════════════════════════════════════════════════════════════
-    # GENERIC CALLBACKS
-    # ══════════════════════════════════════════════════════════════
-
     def update_log(self, text: str):
-        pass  # extend to write to a status bar if desired
+        """Show logs in the Jupyter UI log panel"""
+        if hasattr(self, 'jupyter_ui'):
+            self.jupyter_ui.update_log(text + "\n")
+        print(text)
 
     def update_jupyter_log(self, text: str):
         self.jupyter_ui.update_log(text)
 
     def update_jupyter_state(self, is_running: bool):
         self.jupyter_ui.set_running_state(is_running)
+        if is_running:
+            self.update_log("✅ Jupyter is now running")
+        else:
+            self.update_log("❌ Jupyter has stopped")
 
     def update_git_log(self, text: str):
         self.git_ui.update_log(text)
 
     def _on_workspace_changed(self):
-        self.update_log(f"Workspace → {self.workspace_manager.get_workspace_path()}")
+        self.update_log(f"Workspace changed → {self.workspace_manager.get_workspace_path()}")
         self.jupyter_ui.update_workspace_display()
 
-    # ══════════════════════════════════════════════════════════════
-    # EXIT
-    # ══════════════════════════════════════════════════════════════
-
     def safe_exit(self):
-        if self.process_manager.is_running():
+        if self.script_caller.is_running():
             self.stop_jupyter()
         self.root.destroy()
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app  = SafeJupyterLauncher(root)
+    app = SafeJupyterLauncher(root)
     root.mainloop()

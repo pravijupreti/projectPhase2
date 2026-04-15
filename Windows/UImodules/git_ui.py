@@ -1,20 +1,22 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext
+from .workspace.terminal_widget import TerminalWidget
 
 
 class GitUI:
     """
-    Git tab UI. No git logic — widgets only.
+    Git tab UI with real terminal.
     """
 
     def __init__(self, parent, save_cb, sync_cb,
-                 switch_cb, create_cb, push_cb):
-        self.parent    = parent
-        self.save_cb   = save_cb
-        self.sync_cb   = sync_cb
+                 switch_cb, create_cb, push_cb, workspace_manager):  # ADD workspace_manager
+        self.parent = parent
+        self.save_cb = save_cb
+        self.sync_cb = sync_cb
         self.switch_cb = switch_cb
         self.create_cb = create_cb
-        self.push_cb   = push_cb
+        self.push_cb = push_cb
+        self.workspace_manager = workspace_manager  # ADD THIS
         self._build()
 
     def _build(self):
@@ -83,7 +85,7 @@ class GitUI:
         )
         self.push_status_lbl.pack(side=tk.LEFT)
 
-        # ── Paned: commit graph + log ─────────────────────────────
+        # ── Paned: commit graph + terminal ─────────────────────────
         paned = ttk.Panedwindow(self.parent, orient=tk.VERTICAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
 
@@ -91,19 +93,51 @@ class GitUI:
                                         padx=2, pady=2)
         paned.add(self.tree_frame, weight=3)
 
-        self.log_area = scrolledtext.ScrolledText(
-            paned, height=7, font=("Consolas", 10), bg="#f8f9fa"
-        )
-        paned.add(self.log_area, weight=1)
+        # REPLACE log_area with TerminalWidget
+        self.terminal_widget = TerminalWidget(paned, self.workspace_manager, height=8)
+        paned.add(self.terminal_widget.get_frame(), weight=1)
 
-        # ── Branch hierarchy (bottom) ─────────────────────────────
+        # ── Branch hierarchy with buttons (bottom) ─────────────────
+        hierarchy_container = tk.Frame(self.parent)
+        hierarchy_container.pack(fill=tk.X, side=tk.BOTTOM, padx=15, pady=10)
+        
+        # Button frame for hierarchy
+        button_frame = tk.Frame(hierarchy_container)
+        button_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.show_hierarchy_btn = tk.Button(
+            button_frame,
+            text="📊 Show Hierarchy",
+            bg="#FF9800", fg="white",
+            command=self._show_hierarchy
+        )
+        self.show_hierarchy_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.clear_terminal_btn = tk.Button(
+            button_frame,
+            text="🗑️ Clear Terminal",
+            bg="#f44336", fg="white",
+            command=self._clear_terminal
+        )
+        self.clear_terminal_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Hierarchy frame
         self.hierarchy_frame = tk.LabelFrame(
-            self.parent,
+            hierarchy_container,
             text=" Branch Linkage Hierarchy ",
             padx=5, pady=5,
         )
-        self.hierarchy_frame.pack(fill=tk.X, side=tk.BOTTOM,
-                                  padx=15, pady=10)
+        self.hierarchy_frame.pack(fill=tk.X)
+    
+    def _show_hierarchy(self):
+        """Show branch hierarchy - can be called from app"""
+        # This will be connected to the draw method
+        if hasattr(self, 'on_show_hierarchy'):
+            self.on_show_hierarchy()
+    
+    def _clear_terminal(self):
+        """Clear terminal output"""
+        self.terminal_widget.clear()
 
     # ── placeholder ───────────────────────────────────────────────
 
@@ -144,10 +178,8 @@ class GitUI:
     # ── updaters (thread-safe) ────────────────────────────────────
 
     def update_log(self, text: str):
-        def _u():
-            self.log_area.insert(tk.END, text)
-            self.log_area.see(tk.END)
-        self.log_area.after(0, _u)
+        """For compatibility - sends to terminal"""
+        self.terminal_widget._append_output(text.rstrip(), "output")
 
     def update_branches(self, branches: list):
         def _u():
