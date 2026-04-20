@@ -30,11 +30,11 @@ jobs:
     - name: Download Inno Setup
       run: |
         curl -L -o innosetup.exe https://jrsoftware.org/download.php/is.exe
-        start /wait innosetup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+        .\innosetup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
     
     - name: Compile Inno Setup Script
       run: |
-        "C:\Program Files (x86)\Inno Setup 6\iscc" setup.iss
+        & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" setup.iss
     
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
