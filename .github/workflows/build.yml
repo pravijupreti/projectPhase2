@@ -9,12 +9,15 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write  # ← ADD THIS - gives permission to push tags
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}  # ← ADD THIS
     
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -42,29 +45,26 @@ jobs:
       id: create_tag
       shell: pwsh
       run: |
+        # Configure git
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git config user.name "github-actions[bot]"
+        
         # Get the latest tag or start at v1.0.0
-        $latestTag = git describe --tags --abbrev=0 2>$null
-        if (-not $latestTag) {
-          $newVersion = "v1.0.0"
+        $latestTag = git tag --list "v*" | ForEach-Object { [version]($_ -replace '^v','') } | Sort-Object -Descending | Select-Object -First 1
+        if ($latestTag) {
+          $newVersion = "v$($latestTag.Major).$($latestTag.Minor).$($latestTag.Build + 1)"
         } else {
-          # Extract version number and increment
-          $version = $latestTag -replace '^v', ''
-          $parts = $version -split '\.'
-          $major = [int]$parts[0]
-          $minor = [int]$parts[1]
-          $patch = [int]$parts[2]
-          $patch++
-          $newVersion = "v$major.$minor.$patch"
+          $newVersion = "v1.0.0"
         }
         
         # Create and push tag
-        git config user.email "actions@github.com"
-        git config user.name "GitHub Actions"
         git tag $newVersion
         git push origin $newVersion
         
         echo "NEW_TAG=$newVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         echo "Created tag: $newVersion"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v1
