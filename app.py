@@ -2,6 +2,9 @@
 import os
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import sys
+import traceback
+from datetime import datetime
 
 from Windows.UImodules import (
     GitManager,
@@ -18,6 +21,32 @@ from Windows.UImodules import (
 )
 
 from helper.script_caller import ScriptCaller
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+
+LOG_FILE = os.path.join(BASE_DIR, "runtime_log.txt")
+
+
+def log_runtime(message: str):
+    """Write normal runtime logs"""
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now()}] {message}\n")
+
+
+def install_exception_logger():
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write(f"[{datetime.now()}] UNCAUGHT EXCEPTION\n")
+            traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+            f.write("=" * 80 + "\n")
+
+    sys.excepthook = handle_exception
+
 
 
 class SafeJupyterLauncher:
@@ -47,10 +76,10 @@ class SafeJupyterLauncher:
         self.tab_workspace = ttk.Frame(self.notebook)
         self.tab_system    = ttk.Frame(self.notebook)
 
-        self.notebook.add(self.tab_jupyter,   text=" 🚀 Jupyter Dashboard ")
-        self.notebook.add(self.tab_git,       text=" 🌿 Git & Branch Manager ")
-        self.notebook.add(self.tab_workspace, text=" 📁 Workspace Advanced ")
-        self.notebook.add(self.tab_system,    text=" 🔧 System Check ")
+        self.notebook.add(self.tab_jupyter,   text=" Jupyter Dashboard ")
+        self.notebook.add(self.tab_git,       text=" Git & Branch Manager ")
+        self.notebook.add(self.tab_workspace, text=" Workspace Advanced ")
+        self.notebook.add(self.tab_system,    text=" System Check ")
 
         # ── UI components ─────────────────────────────────────────
         self._setup_jupyter_tab()
@@ -72,7 +101,7 @@ class SafeJupyterLauncher:
 
     def _on_git_error(self, error_msg: str):
         self.root.after(0, lambda: messagebox.showerror("Git Error", error_msg))
-        self.root.after(0, lambda: self.git_ui.update_log(f"❌ {error_msg}\n"))
+        self.root.after(0, lambda: self.git_ui.update_log(f"{error_msg}\n"))
     
     def _setup_git_tab(self):
         self.git_ui = GitUI(
@@ -95,7 +124,7 @@ class SafeJupyterLauncher:
             self._on_workspace_changed,
         )
         info_frame = tk.LabelFrame(
-            self.tab_workspace, text=" ℹ️ Information ", padx=10, pady=10
+            self.tab_workspace, text=" ℹInformation ", padx=10, pady=10
         )
         info_frame.pack(fill=tk.X, padx=15, pady=10)
         tk.Label(
@@ -131,16 +160,16 @@ class SafeJupyterLauncher:
         
         try:
             self.script_caller.jupyter_script(port, self.update_jupyter_state)
-            self.update_log("✅ Jupyter launch initiated")
+            self.update_log("Jupyter launch initiated")
         except Exception as e:
-            error_msg = f"❌ Failed to launch Jupyter: {str(e)}"
+            error_msg = f"Failed to launch Jupyter: {str(e)}"
             self.update_log(error_msg)
             messagebox.showerror("Launch Error", error_msg)
 
     def stop_jupyter(self):
         self.update_log("Stopping Jupyter...")
         self.script_caller.stop_jupyter()
-        self.update_log("✅ Jupyter stopped")
+        self.update_log("Jupyter stopped")
 
     # ══════════════════════════════════════════════════════════════
     # GIT ACTIONS
@@ -151,7 +180,7 @@ class SafeJupyterLauncher:
         branch = self.git_ui.get_branch_combo().get() or "main"
         self.git_manager.save_repo_config(repo, branch)
         messagebox.showinfo("Saved", f"Config saved (branch: {branch})")
-        self.update_log(f"✅ Repo config saved: {repo} (branch: {branch})")
+        self.update_log(f"Repo config saved: {repo} (branch: {branch})")
 
     def _load_repo_config(self):
         url = self.git_manager.load_repo_config()
@@ -222,8 +251,8 @@ class SafeJupyterLauncher:
 
     def _push_finished(self):
         self.git_ui.set_push_busy(False)
-        self.git_ui.set_push_status("✅ Push complete", "#2E7D32")
-        self.update_log("✅ Git push completed successfully")
+        self.git_ui.set_push_status("Push complete", "#2E7D32")
+        self.update_log("Git push completed successfully")
         self._sync_git()
 
     def _on_tree_right_click(self, event):
@@ -232,7 +261,7 @@ class SafeJupyterLauncher:
             return
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(
-            label=f"🌿 New branch from {sha}",
+            label=f"New branch from {sha}",
             command=lambda: self._prompt_new_branch(sha),
         )
         menu.post(event.x_root, event.y_root)
@@ -273,9 +302,9 @@ class SafeJupyterLauncher:
     def update_jupyter_state(self, is_running: bool):
         self.jupyter_ui.set_running_state(is_running)
         if is_running:
-            self.update_log("✅ Jupyter is now running")
+            self.update_log("Jupyter is now running")
         else:
-            self.update_log("❌ Jupyter has stopped")
+            self.update_log("Jupyter has stopped")
 
     def update_git_log(self, text: str):
         self.git_ui.update_log(text)
@@ -291,6 +320,17 @@ class SafeJupyterLauncher:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SafeJupyterLauncher(root)
-    root.mainloop()
+    try:
+        install_exception_logger()
+        log_runtime("Application starting")
+
+        root = tk.Tk()
+        app = SafeJupyterLauncher(root)
+        root.mainloop()
+
+        log_runtime("Application closed normally")
+
+    except Exception:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("\nFATAL STARTUP ERROR\n")
+            traceback.print_exc(file=f)

@@ -1,0 +1,44 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    
+    - name: Install PyInstaller
+      run: |
+        pip install pyinstaller
+    
+    - name: Build with PyInstaller
+      run: |
+        py -3.13 -m PyInstaller --onefile --clean --name ProjectControl1 --add-data "Windows;Windows" app.py
+    
+    - name: Download Inno Setup
+      run: |
+        curl -L -o innosetup.exe https://jrsoftware.org/download.php/is.exe
+        start /wait innosetup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+    
+    - name: Compile Inno Setup Script
+      run: |
+        "C:\Program Files (x86)\Inno Setup 6\iscc" setup.iss
+    
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: Output/mysetup.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
